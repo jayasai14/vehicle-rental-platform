@@ -1,68 +1,156 @@
-# Vehicle Rental Platform
+# DriveElite — Complete Vehicle Rental Platform
 
-A modern, production-oriented vehicle rental marketplace launching in Vijayawada, Andhra Pradesh. The platform supports cars, bikes, and scooters through two distinct supply channels:
+A modern, production-oriented vehicle rental marketplace built for **Vijayawada, Andhra Pradesh, India**, with clean multi-city extensibility. 
 
-1. **Partner-Owned Fleet** — verified rental partners register and manage their own vehicles independently.
-2. **Contributor-Owned Fleet** — individuals submit vehicles to a rental partner. If accepted, the partner manages rental operations and pays the contributor an agreed fixed compensation per eligible completed booking under a recorded agreement.
-
-Customers use a unified marketplace to discover and book both inventory types.
+The platform supports cars, bikes, scooters, and electric vehicles (EVs) across two distinct supply channels:
+1. **Partner-Owned Fleet** — verified rental partners register and manage their own fleet independently.
+2. **Contributor-Owned Fleet** — individuals submit idle personal vehicles to a rental partner under legally binding contribution agreements and receive predictable revenue shares.
 
 ---
 
-## MVP Payment Architecture: Partner-Direct Collection
+## Architecture Highlights
 
-The MVP adopts a **Partner-Direct Payment Collection** model (ADR-018):
-- **Direct Payee:** The rental partner managing a vehicle is the customer-facing rental service provider and direct payee for all bookings on that vehicle.
-- **Zero Platform Cash Handling:** The platform does NOT collect, hold, escrow, split, or disburse customer rental money or security deposits in the MVP.
-- **Payment Methods Supported:** Partner's UPI QR code, Partner's UPI ID, Partner's external payment link (if configured), and Cash at pickup (where enabled by the partner).
-- **Manual Verification Gate (Strict Invariant):** A customer-uploaded screenshot or UTR never automatically marks a payment as verified. ONLY explicit partner confirmation marks the payment `VERIFIED` and confirms the booking.
-- **Security Deposit Custody & Refunds:** The partner directly receives, holds, and refunds security deposits outside the platform. The platform records demands, collection references, evidence-based deductions, and refund audit trails.
-- **Contributor Compensation (Approach A):** The partner pays the contributor an agreed fixed fee per eligible completed booking directly outside the platform via NEFT/IMPS/UPI. Tracked in `contributor_payables`.
-- **Future-Phase Marketplace Gateway:** The architecture remains provider-agnostic. Integration with an approved marketplace payment provider (e.g. Razorpay Route) for automated split settlements and platform general ledger tracking is deferred to a future phase.
+- **Partner-Direct Payment Collection (ADR-018):** The platform never escrows, holds, or splits customer rental money in the MVP. Customers remit payments directly to the verified managing partner’s UPI ID/QR.
+- **Manual Verification Gate:** Submissions require explicit partner verification (comparing against bank statement) before bookings transition to `CONFIRMED`.
+- **Financial Safeguard A (Late-Payment Reapplication):** If a customer transfers funds after a 15-minute booking hold expires, the verified submission can be securely reallocated to a new active hold under strict single-use locks, preventing dead loss.
+- **Financial Safeguard B (Pessimistic Refund Locking):** Partner rental fee refund obligations for cancelled bookings calculate refundable balances under pessimistic row locks: `total_verified_submitted - cancellation_fee - cumulative_unvoided_refunds`.
+- **48 Physical Tables:** 46 application-domain tables + 2 infrastructure tables (`flyway_schema_history` and `shedlock`). Zero placeholder endpoints or dead UI buttons.
+- **ShedLock Distributed Tasks:** Automated background tasks for expiring stale holds (every 60s) and transitioning 72-hour unacknowledged refund dispute windows.
 
 ---
 
 ## Technology Stack
 
-- **Frontend:** React + Vite, Tailwind CSS, React Router, Axios
-- **Backend:** Java + Spring Boot, Spring Security, Spring Data JPA
-- **Database:** MySQL 8.0+
-- **Authentication:** BCrypt password hashing, JWT access/refresh token flow with server-side rotation/revocation (`refresh_tokens`), and resource-level authorization
-- **External Integrations:** Cloudinary/S3 private media storage, transactional notifications via Transactional Outbox, provider-agnostic payment interfaces
+### Backend
+- **Core:** Java 21 LTS, Spring Boot 3.3.5
+- **Security:** Spring Security 6, JWT with refresh token rotation and database-backed revocation (`refresh_tokens`), BCrypt password hashing
+- **Persistence:** Spring Data JPA, Hibernate ORM, MySQL 8.0+
+- **Migrations:** Flyway (`V1__initial_schema.sql`, `V2__seed_demo_data.sql`)
+- **Concurrency & Locking:** Pessimistic write locks (`PESSIMISTIC_WRITE`), ShedLock for multi-instance distributed background tasks
+
+### Frontend
+- **Core:** React 18, Vite, React Router v6, Axios
+- **Styling:** Tailwind CSS v3, Glassmorphism design tokens, Google Fonts (Inter & Outfit)
+- **Features:** 15-minute live countdown timer, interactive UPI QR modal with UTR entry, 1-click test persona fast-fill, responsive mobile drawers, role-based route guards
 
 ---
 
-## Core Roles & Capabilities
+## Project Structure
 
-- `CUSTOMER`: Browse, compare, create 15-minute booking holds, view managing partner payment instructions, submit payment references (UTR / receipt), track verification status, participate in inspections, dispute deposit deductions (48h window), explicitly acknowledge or dispute refunds (72h window), view own payments and verification records.
-- `VEHICLE_CONTRIBUTOR`: Submit personally owned vehicles, review partner offers, manage agreements/availability requests, participate in direct handover/return inspections, acknowledge direct handovers, view earnings and settlement statuses (with UTR references), acknowledge or dispute direct settlements, request vehicle withdrawal.
-- `RENTAL_PARTNER (VERIFIED)`: Maintain partner business profile, configure direct payment profile (UPI QR/ID/Link), verify or reject customer payment submissions, manage hubs and pickup locations, register independently owned fleet, review contributor vehicle submissions, manage accepted vehicles and bookings, conduct inspections, manage direct deposit custody and refunds, and record direct contributor settlements with UTR (Approach A).
-- `ADMIN`: Verify partners and vehicles, arbitrate deposit and rental-fee refund disputes linking support tickets, oversee compliance, and view security audit logs. Admin access is permission-controlled and audited.
+```
+vehicle-rental-platform/
+├── backend/
+│   ├── src/main/java/com/vehiclerental/
+│   │   ├── config/              # SecurityConfig, ShedLockConfig
+│   │   ├── common/              # Global exceptions, ApiResponse, DataSeeder
+│   │   └── modules/
+│   │       ├── user/            # User, Role, RefreshToken, AuthService, AuthController
+│   │       ├── location/        # City, PartnerHub, PickupLocation, LocationService
+│   │       ├── partner/         # PartnerProfile, PartnerPaymentProfile, FleetService
+│   │       ├── contributor/     # ContributorProfile, Agreement, ContributorService
+│   │       ├── vehicle/         # Vehicle, Pricing, Features, Search, Availability
+│   │       ├── custody/         # Custody state machine, VehicleCustodyEvent
+│   │       ├── booking/         # BookingHold, Booking, Handover, Return, Extension
+│   │       ├── payment/         # Demand, Submission, Refund, Deposit, Safeguards
+│   │       └── operations/      # SupportTicket, AuditLog, ScheduledTasksService
+│   ├── src/main/resources/
+│   │   ├── application.yml
+│   │   └── db/migration/
+│   │       ├── V1__initial_schema.sql      # Complete 48-table DDL with late payment fields
+│   │       └── V2__seed_demo_data.sql       # Demo hubs, vehicles, agreements & pricing
+│   └── pom.xml
+├── frontend/
+│   ├── src/
+│   │   ├── api/                 # Axios client with 401 token refresh rotation & endpoints
+│   │   ├── context/             # AuthContext with 1-click persona switcher
+│   │   ├── components/          # Navbar, Footer, StatusBadge, HoldTimer, UPIPaymentModal
+│   │   └── pages/               # HomePage, VehiclesPage, DetailPage, CheckoutPage,
+│   │                            # CustomerDashboard, PartnerDashboard, ContributorDashboard, AdminDashboard
+│   ├── package.json
+│   ├── tailwind.config.js
+│   └── vite.config.js           # Dev server proxying /api to http://localhost:8080
+├── docs/                        # Complete frozen architecture documentation (15 files)
+└── README.md
+```
 
 ---
 
-## Authoritative Database Design Freeze Documentation (48 Physical Tables for MVP)
+## Demo Accounts & Test Personas
 
-All documentation reflects the reconciled database design freeze candidate baseline:
+The database is pre-seeded with realistic Vijayawada data and test accounts for each role. Every account uses password: `Password@123`
 
-1. [Project Constitution](docs/PROJECT_CONSTITUTION.md) — Mandatory development rules, non-negotiable domain invariants, partner-direct payment rules, booking confirmation invariants, and configurable operational defaults.
-2. [Business Requirements](docs/BUSINESS_REQUIREMENTS.md) — Workflows, dual inventory channels, 8 custody permutations, 10-step partner-direct payment workflow, rental-fee refund rules, and tax disclaimers.
-3. [System Architecture](docs/ARCHITECTURE.md) — Modular monolith design, 46 MVP domain tables + 2 infra tables (48 MVP physical tables total), outbox pattern, and distributed scheduling.
-4. [Architecture Decision Records](docs/ARCHITECTURE_DECISIONS.md) — Formal ADRs (ADR-001 through ADR-018), including ADR-018 Partner-Direct Payment Collection & Decoupled State Machines.
-5. [Final Physical Entity Inventory](docs/FINAL_ENTITY_INVENTORY.md) — Authoritative inventory of **48 proposed physical tables for MVP** (46 application-domain + 2 infrastructure) + **8 Future-Phase tables** (56 total cataloged entities).
-6. [Entity Relationships & Master ERD](docs/ENTITY_RELATIONSHIPS.md) — Referential integrity, cardinality, and comprehensive Mermaid ER diagram connecting all 46 MVP domain tables.
-7. [Operational & Financial State Machines](docs/STATE_MACHINES.md) — Decoupled lifecycle state transition specifications for holds, bookings, payment demands, submissions, rental-fee refunds, deposit refunds, agreements, and custody.
-8. [Financial & Operational Record-Keeping Architecture](docs/FINANCIAL_ARCHITECTURE.md) — Zero platform cash handling, partner direct collection, rental-fee refund tracking, deposit direct custody, contributor compensation tracking (Approach A), and future-phase general ledger roadmap.
-9. [Role-Permission Matrix](docs/ROLE_PERMISSION_MATRIX.md) — Global capabilities, verified partner gates, payment verification authorization, rental-fee refund permissions, and fine-grained resource-level security (BOLA/IDOR defense).
-10. [API Module Plan](docs/API_MODULES.md) — REST endpoint inventory under `/api/v1` namespace, including decoupled demand/submission and rental-fee refund endpoints.
-11. [Security Baseline](docs/SECURITY.md) — Authentication, token encryption, payment submission verification security, duplicate reference prevention, partner UTR non-equivalence, and dispute arbitration controls.
-12. [Page and Route Inventory](docs/PAGES_AND_ROUTES.md) — Frontend route map across roles, including payment instruction, partner verification, and rental-fee refund screens.
-13. [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md) — Phase discipline, Git workflow, and quality gates.
-14. [Architecture Review Report](docs/architecture_review_report.md) — Pre-freeze validation audit findings, final reconciliation report, and sign-off status.
+| Role | Email | Password | Primary Capabilities |
+| :--- | :--- | :--- | :--- |
+| **Customer** | `customer@example.com` | `Password@123` | Browse fleet, create holds, pay partner UPI, cancel bookings, acknowledge/dispute refunds |
+| **Rental Partner** | `partner@example.com` | `Password@123` | Fleet management, verify/reject UPI payments, pre-rental handover & return inspections |
+| **Car Contributor** | `contributor@example.com` | `Password@123` | Attach cars to hubs, digital agreements, track monthly earnings, confirm/dispute payables |
+| **Platform Admin** | `admin@example.com` | `Password@123` | KPI overview, approve/reject partners, arbitrate refund & deposit disputes, audit logs |
+
+> **Fast Testing:** The login screen and navbar contain a **1-click Persona Switcher** allowing instant role transitions without manual credential entry.
 
 ---
 
-## Implementation Status
+## Local Setup & Running Instructions
 
-> [!IMPORTANT]
-> This repository is currently in the **Database Design Freeze & Pre-Implementation** stage. **No application code, Flyway migrations, JPA entities, or SQL DDL scripts have been generated yet.** Implementation will commence only after formal Product Owner database design freeze sign-off.
+### Prerequisites
+- Java 21 or Java 17 LTS
+- Node.js (v18+) and npm
+- MySQL 8.0+ running on port `3306` with database `vehicle_rental_db` created:
+  ```sql
+  CREATE DATABASE vehicle_rental_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  CREATE USER 'vehicle_user'@'localhost' IDENTIFIED BY 'vehicle_pass';
+  GRANT ALL PRIVILEGES ON vehicle_rental_db.* TO 'vehicle_user'@'localhost';
+  FLUSH PRIVILEGES;
+  ```
+
+### 1. Run Backend Server
+```bash
+cd backend
+# Run unit test suite
+./mvnw test
+
+# Start Spring Boot application on port 8080
+./mvnw spring-boot:run
+```
+*(On Windows cmd, invoke `mvnw.cmd spring-boot:run`)*.
+Flyway will automatically apply `V1__initial_schema.sql` and `V2__seed_demo_data.sql`.
+
+### 2. Run Frontend Development Server
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open **[http://localhost:5173](http://localhost:5173)** in your browser. All API calls to `/api/v1` are seamlessly proxied to the backend on `localhost:8080`.
+
+### 3. Build Production Bundle
+```bash
+cd frontend
+npm run build
+```
+Creates optimized production assets in `frontend/dist/`.
+
+---
+
+## Automated Test Coverage
+
+The backend includes comprehensive JUnit 5 and Mockito test suites validating critical architectural invariants:
+- `AvailabilityAndBookingTest`: Calendar overlap detection, hold collisions, and availability queries.
+- `FinancialSafeguardsTest`: 
+  - **Safeguard A:** Late-payment recovery from expired demands onto new active holds, preventing double reapplication.
+  - **Safeguard B:** Pessimistic row locking on refundable rental fee balances (`total_verified - cancellation_fee - cumulative_refunds`).
+- `AuthServiceTest`: User registration, BCrypt credential verification, and refresh token rotation with single-use replay protection.
+
+Run tests anytime with:
+```bash
+./mvnw test
+```
+
+---
+
+## Operational Hubs in Vijayawada
+
+1. **Benz Circle Central Hub** (Shop 14, MG Road, Benz Circle, Vijayawada - 520010)
+2. **Vijayawada Junction Hub** (Opposite Railway Station Main Gate, Station Road, Vijayawada - 520001)
+3. **Gannavaram Airport Express** (Terminal 1 Arrival Dropoff Zone, Gannavaram, Vijayawada - 521102)
+4. **PNBS Transit Hub** (Pandit Nehru Bus Station Bay 3, Vijayawada - 520013)

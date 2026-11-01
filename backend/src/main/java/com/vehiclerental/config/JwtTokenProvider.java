@@ -29,8 +29,24 @@ public class JwtTokenProvider {
 
         return Jwts.builder()
                 .subject(String.valueOf(userId))
+                .claim("userId", userId)
                 .claim("email", email)
                 .claim("roles", roles)
+                .issuedAt(now)
+                .expiration(expiryDate)
+                .signWith(key)
+                .compact();
+    }
+
+    public String generateToken(Long userId, String email, java.util.Set<String> roles) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + accessTokenExpirationMs);
+
+        return Jwts.builder()
+                .subject(String.valueOf(userId))
+                .claim("userId", userId)
+                .claim("email", email)
+                .claim("roles", new java.util.ArrayList<>(roles))
                 .issuedAt(now)
                 .expiration(expiryDate)
                 .signWith(key)
@@ -57,7 +73,17 @@ public class JwtTokenProvider {
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
-        return Long.parseLong(claims.getSubject());
+        String sub = claims.getSubject();
+        if (sub != null && sub.matches("\\d+")) {
+            return Long.parseLong(sub);
+        }
+        Object uid = claims.get("userId");
+        if (uid instanceof Number) {
+            return ((Number) uid).longValue();
+        } else if (uid != null && uid.toString().matches("\\d+")) {
+            return Long.parseLong(uid.toString());
+        }
+        return null;
     }
 
     public String getEmailFromToken(String token) {
@@ -66,7 +92,11 @@ public class JwtTokenProvider {
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
-        return claims.get("email", String.class);
+        String email = claims.get("email", String.class);
+        if (email != null && !email.isBlank()) {
+            return email;
+        }
+        return claims.getSubject();
     }
 
     @SuppressWarnings("unchecked")

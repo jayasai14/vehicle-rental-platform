@@ -9,6 +9,6 @@ import java.util.List;
 @Repository
 public interface PartnerHubRepository extends JpaRepository<PartnerHub, Long> {
     List<PartnerHub> findByPartnerId(Long partnerId);
-    List<PartnerHub> findByCityIdAndIsActiveTrue(Long cityId);
-    List<PartnerHub> findByIsActiveTrue();
+    List<PartnerHub> findByCityIdAndActiveTrue(Long cityId);
+    List<PartnerHub> findByActiveTrue();
 }

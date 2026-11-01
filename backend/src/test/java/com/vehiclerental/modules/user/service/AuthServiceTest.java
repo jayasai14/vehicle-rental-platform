@@ -74,7 +74,7 @@ class AuthServiceTest {
         savedUser.setFullName("Test Customer");
         savedUser.setRoles(Set.of(new Role("ROLE_CUSTOMER", "Customer")));
         when(userRepository.save(any(User.class))).thenReturn(savedUser);
-        when(jwtTokenProvider.generateToken(any(), any())).thenReturn("jwt.token.here");
+        when(jwtTokenProvider.generateToken(any(), any(), any())).thenReturn("jwt.token.here");
 
         AuthDto.AuthResponse response = authService.register(req);
 
@@ -116,7 +116,7 @@ class AuthServiceTest {
 
         when(userRepository.findByEmail("test@customer.com")).thenReturn(Optional.of(user));
         when(passwordEncoder.matches("Password@123", "hashedSecret")).thenReturn(true);
-        when(jwtTokenProvider.generateToken(any(), any())).thenReturn("mock.jwt.token");
+        when(jwtTokenProvider.generateToken(any(), any(), any())).thenReturn("mock.jwt.token");
 
         AuthDto.AuthResponse resp = authService.login(req);
 
@@ -140,8 +140,8 @@ class AuthServiceTest {
         rt.setExpiresAt(LocalDateTime.now().plusDays(5));
         rt.setRevoked(false);
 
-        when(refreshTokenRepository.findByToken(oldToken)).thenReturn(Optional.of(rt));
-        when(jwtTokenProvider.generateToken(any(), any())).thenReturn("new.access.token");
+        when(refreshTokenRepository.findByTokenHash(oldToken)).thenReturn(Optional.of(rt));
+        when(jwtTokenProvider.generateToken(any(), any(), any())).thenReturn("new.access.token");
 
         AuthDto.AuthResponse response = authService.refreshToken(oldToken);
 

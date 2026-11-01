@@ -29,7 +29,7 @@ public class VehicleController {
     private final VehicleService vehicleService;
     private final UserRepository userRepository;
 
-    @GetMapping("/vehicles")
+    @GetMapping({"/vehicles", "/vehicles/search"})
     public ResponseEntity<ApiResponse<PagedResponse<VehicleDto.VehicleCardDto>>> searchVehicles(
             @RequestParam(required = false) Long cityId,
             @RequestParam(required = false) Long hubId,
@@ -46,6 +46,14 @@ public class VehicleController {
                 cityId, hubId, category, startTime, endTime, maxDailyRate, transmission, pageable
         );
         return ResponseEntity.ok(ApiResponse.success(PagedResponse.from(result), "Vehicles retrieved"));
+    }
+
+    @GetMapping("/vehicles/categories")
+    public ResponseEntity<ApiResponse<List<String>>> getVehicleCategories() {
+        return ResponseEntity.ok(ApiResponse.success(
+                List.of("SUV", "SEDAN", "HATCHBACK", "EV", "LUXURY", "COMMERCIAL"),
+                "Vehicle categories retrieved"
+        ));
     }
 
     @GetMapping("/vehicles/{id}")

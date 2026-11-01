@@ -77,8 +77,8 @@ public class DataSeeder implements CommandLineRunner {
     @Override
     @Transactional
     public void run(String... args) {
-        if (userRepository.findByEmail("admin@vehiclerental.com").isPresent()) {
-            log.info("Demo data already seeded.");
+        if (userRepository.findByEmail("admin@example.com").isPresent() || userRepository.count() > 0) {
+            log.info("Demo data already seeded (Flyway / DB initialized).");
             return;
         }
 
@@ -99,7 +99,7 @@ public class DataSeeder implements CommandLineRunner {
         // 1. Admin User
         User admin = new User();
         admin.setFullName("Platform Administrator");
-        admin.setEmail("admin@vehiclerental.com");
+        admin.setEmail("admin@example.com");
         admin.setPhoneNumber("+919876543210");
         admin.setPasswordHash(passwordEncoder.encode("Password@123"));
         admin.setActive(true);
@@ -109,8 +109,8 @@ public class DataSeeder implements CommandLineRunner {
 
         // 2. Partner User
         User partnerUser = new User();
-        partnerUser.setFullName("Kalyan Rentals Fleet Manager");
-        partnerUser.setEmail("partner@vijayawada.com");
+        partnerUser.setFullName("Sri Krishna Rentals Fleet Manager");
+        partnerUser.setEmail("partner@example.com");
         partnerUser.setPhoneNumber("+919848012345");
         partnerUser.setPasswordHash(passwordEncoder.encode("Password@123"));
         partnerUser.setActive(true);
@@ -127,7 +127,7 @@ public class DataSeeder implements CommandLineRunner {
 
         PartnerProfile partner = new PartnerProfile();
         partner.setUser(partnerUser);
-        partner.setBusinessName("Kalyan Self-Drive Rentals LLP");
+        partner.setBusinessName("Sri Krishna Self-Drive Rentals LLP");
         partner.setPanNumber("ABCDE1234F");
         partner.setGstin("37ABCDE1234F1Z5");
         partner.setTradeLicenceNumber("TL-VJA-2026-9081");
@@ -142,9 +142,9 @@ public class DataSeeder implements CommandLineRunner {
         // Partner Payment Profile (Partner-Direct UPI)
         PartnerPaymentProfile ppp = new PartnerPaymentProfile();
         ppp.setPartner(partner);
-        ppp.setPayeeDisplayName("Kalyan Rentals");
-        ppp.setUpiId("kalyanrentals@oksbi");
-        ppp.setExternalPaymentUrl("https://upi.example.com/pay?pa=kalyanrentals@oksbi");
+        ppp.setPayeeDisplayName("Sri Krishna Rentals");
+        ppp.setUpiId("srirental@okaxis");
+        ppp.setExternalPaymentUrl("https://upi.example.com/pay?pa=srirental@okaxis");
         ppp.setAcceptedPaymentMethods("[\"UPI_QR\", \"UPI_ID\", \"CASH_AT_PICKUP\"]");
         ppp.setCashAtPickupEnabled(true);
         ppp.setActive(true);
@@ -209,7 +209,7 @@ public class DataSeeder implements CommandLineRunner {
         // 3. Contributor User
         User contributorUser = new User();
         contributorUser.setFullName("Suresh Varma");
-        contributorUser.setEmail("contributor@owner.com");
+        contributorUser.setEmail("contributor@example.com");
         contributorUser.setPhoneNumber("+919440156789");
         contributorUser.setPasswordHash(passwordEncoder.encode("Password@123"));
         contributorUser.setActive(true);
@@ -220,6 +220,7 @@ public class DataSeeder implements CommandLineRunner {
         ContributorProfile contributor = new ContributorProfile();
         contributor.setUser(contributorUser);
         contributor.setPanNumber("ABCDE9876Z");
+        contributor.setBankAccountHolderName("Suresh Varma");
         contributor.setBankAccountNumber("91002003004050");
         contributor.setBankIfscCode("HDFC0001234");
         contributor.setBankName("HDFC Bank Benz Circle");
@@ -230,7 +231,7 @@ public class DataSeeder implements CommandLineRunner {
         // 4. Customer User
         User customerUser = new User();
         customerUser.setFullName("Ravi Teja");
-        customerUser.setEmail("customer@rider.com");
+        customerUser.setEmail("customer@example.com");
         customerUser.setPhoneNumber("+919123456780");
         customerUser.setPasswordHash(passwordEncoder.encode("Password@123"));
         customerUser.setActive(true);

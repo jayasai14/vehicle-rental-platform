@@ -10,5 +10,5 @@ import java.util.List;
 public interface PickupLocationRepository extends JpaRepository<PickupLocation, Long> {
     List<PickupLocation> findByPartnerId(Long partnerId);
     List<PickupLocation> findByPartnerHubId(Long hubId);
-    List<PickupLocation> findByIsActiveTrue();
+    List<PickupLocation> findByActiveTrue();
 }

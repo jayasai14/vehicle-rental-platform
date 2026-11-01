@@ -32,7 +32,7 @@ public class LocationService {
 
     @Transactional(readOnly = true)
     public List<LocationDto.CityDto> getAllCities() {
-        return cityRepository.findByIsActiveTrue().stream()
+        return cityRepository.findByActiveTrue().stream()
                 .map(c -> LocationDto.CityDto.builder()
                         .id(c.getId())
                         .name(c.getName())
@@ -48,9 +48,9 @@ public class LocationService {
         if (partnerId != null) {
             hubs = partnerHubRepository.findByPartnerId(partnerId);
         } else if (cityId != null) {
-            hubs = partnerHubRepository.findByCityIdAndIsActiveTrue(cityId);
+            hubs = partnerHubRepository.findByCityIdAndActiveTrue(cityId);
         } else {
-            hubs = partnerHubRepository.findByIsActiveTrue();
+            hubs = partnerHubRepository.findByActiveTrue();
         }
 
         return hubs.stream().map(h -> LocationDto.PartnerHubDto.builder()
@@ -72,7 +72,7 @@ public class LocationService {
         } else if (hubId != null) {
             locations = pickupLocationRepository.findByPartnerHubId(hubId);
         } else {
-            locations = pickupLocationRepository.findByIsActiveTrue();
+            locations = pickupLocationRepository.findByActiveTrue();
         }
 
         return locations.stream().map(l -> LocationDto.PickupLocationDto.builder()

@@ -58,7 +58,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         return null;
     }
 
-    public static class UserPrincipal {
+    public static class UserPrincipal implements java.security.Principal {
         private final Long id;
         private final String email;
         private final List<SimpleGrantedAuthority> authorities;
@@ -67,6 +67,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             this.id = id;
             this.email = email;
             this.authorities = authorities;
+        }
+
+        @Override
+        public String getName() {
+            return email;
         }
 
         public Long getId() {
@@ -79,6 +84,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         public List<SimpleGrantedAuthority> getAuthorities() {
             return authorities;
+        }
+
+        @Override
+        public String toString() {
+            return email;
         }
     }
 }

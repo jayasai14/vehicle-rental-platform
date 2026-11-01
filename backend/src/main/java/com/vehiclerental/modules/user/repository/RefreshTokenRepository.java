@@ -11,9 +11,9 @@ import java.util.Optional;
 
 @Repository
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long> {
-    Optional<RefreshToken> findByToken(String token);
+    Optional<RefreshToken> findByTokenHash(String tokenHash);
 
     @Modifying
-    @Query("UPDATE RefreshToken r SET r.isRevoked = true WHERE r.user.id = :userId")
+    @Query("UPDATE RefreshToken r SET r.revoked = true WHERE r.user.id = :userId")
     void revokeAllByUserId(@Param("userId") Long userId);
 }

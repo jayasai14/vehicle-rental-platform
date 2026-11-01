@@ -98,7 +98,7 @@ public class AuthService {
 
     @Transactional
     public AuthDto.AuthResponse refreshToken(String oldRefreshToken) {
-        RefreshToken token = refreshTokenRepository.findByToken(oldRefreshToken)
+        RefreshToken token = refreshTokenRepository.findByTokenHash(oldRefreshToken)
                 .orElseThrow(() -> new UnauthorizedException("Invalid refresh token"));
 
         if (token.isRevoked() || token.getExpiresAt().isBefore(LocalDateTime.now())) {
@@ -117,7 +117,7 @@ public class AuthService {
 
     @Transactional
     public void logout(String refreshToken) {
-        refreshTokenRepository.findByToken(refreshToken).ifPresent(token -> {
+        refreshTokenRepository.findByTokenHash(refreshToken).ifPresent(token -> {
             token.setRevoked(true);
             refreshTokenRepository.save(token);
         });
@@ -188,7 +188,7 @@ public class AuthService {
 
     private AuthDto.AuthResponse createAuthResponse(User user) {
         Set<String> roleNames = user.getRoles().stream().map(Role::getName).collect(Collectors.toSet());
-        String accessToken = jwtTokenProvider.generateToken(user.getEmail(), roleNames);
+        String accessToken = jwtTokenProvider.generateToken(user.getId(), user.getEmail(), roleNames);
 
         // Generate Refresh Token
         String tokenString = UUID.randomUUID().toString();
