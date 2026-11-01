@@ -121,23 +121,30 @@
 
 ---
 
-## 8. Partner Payment Profiles, Demands, Submissions & Deposits
+## 8. Partner Payment Profiles, Demands, Submissions, Refunds & Deposits
 
 - `GET /api/v1/partner/payment-profile` - Partner views their configured direct payment profile (payee name, UPI ID, QR key, link, cash setting).
 - `PUT /api/v1/partner/payment-profile` - Partner configures payee display name, UPI ID, uploads UPI QR image, external payment link, accepted payment methods, and cash-at-pickup toggle.
 - `GET /api/v1/booking-holds/{holdId}/payment-instructions` - Customer views managing partner's payment instructions (payee name, UPI QR image presigned URL, UPI ID, amount due, hold expiration time).
-- `POST /api/v1/booking-holds/{holdId}/submit-payment` - Customer submits direct payment proof: payment method, transaction reference / UTR, amount, transaction timestamp, optional receipt image. Transitions hold to `VERIFICATION_PENDING`.
+- `POST /api/v1/booking-holds/{holdId}/submit-payment` - Customer submits direct payment proof against hold demand: payment method, transaction reference / UTR, amount, transaction timestamp, optional receipt image. Transitions hold to `VERIFICATION_PENDING`.
+- `POST /api/v1/payment-demands/{demandId}/submit-payment` - Customer submits initial or top-up direct payment submission against an active payment demand.
 - `GET /api/v1/partner/payment-submissions` - Partner views pending payment submissions requiring verification (`SUBMITTED_FOR_VERIFICATION`).
-- `POST /api/v1/partner/payment-submissions/{submissionId}/verify` - Partner verifies funds received in their own bank/UPI account; transitions payment to `VERIFIED` and hold to `CONVERTED`, creating `bookings` row (`CONFIRMED`).
-- `POST /api/v1/partner/payment-submissions/{submissionId}/reject` - Partner rejects payment submission with mandatory reason; notifies customer.
-- `GET /api/v1/customer/payment-submissions` - Customer tracks submitted payment proof and verification status.
+- `POST /api/v1/partner/payment-submissions/{submissionId}/verify` - Partner verifies funds received in their bank/UPI account; accumulates amount into `demand.amount_satisfied`. When demand is `SATISFIED`, transitions hold to `CONVERTED` and creates `bookings` row (`CONFIRMED`).
+- `POST /api/v1/partner/payment-submissions/{submissionId}/reject` - Partner rejects payment submission with mandatory reason; notifies customer to submit top-up or valid reference.
+- `GET /api/v1/customer/payment-submissions` - Customer tracks submitted payment proof, accumulated verified amount, and remaining demand balance.
+- `POST /api/v1/partner/rental-fee-refunds` - Partner initiates and records direct rental-fee refund (booking cancellation, overpayment, expired-hold exception) with mandatory UTR reference, proof document, gross amount, fee deducted, net refund amount, and policy snapshot.
+- `GET /api/v1/partner/rental-fee-refunds` - Partner views rental-fee refund obligations and history.
+- `GET /api/v1/customer/rental-fee-refunds` - Customer views rental-fee refund records and statuses.
+- `POST /api/v1/customer/rental-fee-refunds/{refundId}/acknowledge` - Customer acknowledges receipt of rental-fee refund.
+- `POST /api/v1/customer/rental-fee-refunds/{refundId}/dispute` - Customer disputes non-receipt of rental-fee refund within 72 hours.
+- `POST /api/v1/admin/rental-fee-refunds/{refundId}/resolve` - Admin arbitrates rental-fee refund dispute.
 - `GET /api/v1/bookings/{bookingId}/security-deposit` - View security deposit status in partner custody.
 - `POST /api/v1/partner/bookings/{bookingId}/security-deposit/deductions` - Partner proposes evidence-based damage/fuel deduction.
 - `POST /api/v1/customer/deposit-deductions/{deductionId}/dispute` - Customer disputes proposed deduction within 48h.
 - `POST /api/v1/admin/deposit-deductions/{deductionId}/resolve` - Admin arbitrates dispute (**never auto-approved upon 48h expiration**).
 - `POST /api/v1/partner/bookings/{bookingId}/security-deposit/record-refund` - Partner records direct deposit refund to customer (refund amount, method, UTR reference, proof document).
 - `POST /api/v1/customer/security-deposit-refunds/{refundId}/acknowledge` - Customer acknowledges receipt of deposit refund.
-- `POST /api/v1/customer/security-deposit-refunds/{refundId}/dispute` - Customer disputes non-receipt of refund funds.
+- `POST /api/v1/customer/security-deposit-refunds/{refundId}/dispute` - Customer disputes non-receipt of deposit refund funds.
 - `GET /api/v1/partner/contributor-payables` - Partner lists contractual fixed fee obligations owed to contributors (`contributor_payables`).
 - `POST /api/v1/partner/contributor-payables/{payableId}/record-settlement` - **Approach A Baseline:** Partner records single complete direct bank transfer with mandatory UTR reference, payment date, and receipt attachment.
 - `POST /api/v1/contributor/contributor-payables/{payableId}/acknowledge` - Contributor confirms receipt of direct partner settlement.

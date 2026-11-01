@@ -126,56 +126,46 @@ The MVP adopts a **Partner-Direct Payment Collection Model**. The platform does 
 │      │                                            │    (SUBMITTED_FOR_VERIFY)│         │
 │      │                                            │                          │── 6. Checks bank/UPI
 │      │                                            │<── 7. VERIFIES / REJECTS │      records
-│      │                                            │                          │         │
-│      │<── 8. Booking CONFIRMED (if verified) ─────│ (Converts hold)          │         │
-│      │       (OR Rejection notice with reason)    │                          │         │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-#### Detailed Step-by-Step Flow:
-1. **Booking Hold Request:** Customer selects dates and pickup options. The system acquires a pessimistic lock (`SELECT ... FOR UPDATE`) and creates a temporary `booking_holds` record (15-minute TTL).
-2. **Display Partner Payment Instructions:** The checkout interface displays the managing partner's payment profile (`partner_payment_profiles`):
-   - Legal trade / payee name.
-   - Partner's UPI ID.
-   - Dynamic/static UPI QR code image (retrieved via secure presigned URL).
-   - Optional external payment URL (if configured).
-   - Pay-at-pickup option (only if explicitly enabled by the partner).
-   - Exact itemized demand: Rental Subtotal + Security Deposit.
-3. **Direct External Transfer:** The customer transfers the exact amount directly to the partner using their UPI app, net banking, or external payment link.
-4. **Payment Submission:** The customer submits the transaction reference via `POST /api/v1/bookings/holds/{holdId}/submit-payment`:
-   - Payment method (`UPI_QR`, `UPI_ID`, `PAYMENT_LINK`, `CASH_AT_PICKUP`).
-   - Transaction Reference / Bank UTR number (mandatory for electronic transfers).
-   - Amount submitted.
-   - Transaction timestamp.
-   - Optional payment screenshot or receipt attachment.
-5. **Pending Verification Status:**
+│      │                                            │                          │            - Optional payment screenshot or receipt attachment.
+5. **Pending Verification Status & Demand Separation:**
    - The platform creates a `rental_payment_submissions` record in `SUBMITTED_FOR_VERIFICATION` status.
-   - The underlying `rental_payment_demands` updates to `SUBMITTED`.
-   - The vehicle hold remains **strictly locked** while an active verification window (configurable default: 60 minutes) is open.
-   - The managing partner receives an immediate push/SMS/email alert to verify the incoming payment.
+   - The parent `rental_payment_demands` remains in `OPEN` (or `PARTIALLY_SATISFIED` if prior verified payments exist).
+   - The vehicle hold remains **strictly locked** while an active verification window (configurable default: 60 minutes) is open (`booking_holds.status = VERIFICATION_PENDING`).
+   - The managing partner receives an immediate push/SMS/email alert to verify the incoming payment submission.
 6. **Independent Partner Audit:** The partner inspects their own UPI app, bank statement, or cash register to verify credit.
 7. **Partner Verification Gate (Non-Negotiable Invariant):**
    - **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as successful or confirm a booking.**
    - **ONLY explicit partner verification** can transition the submission to `VERIFIED`.
    - Partner submits verification decision:
-     - **Action A: VERIFY** (`POST /api/v1/partner/payment-submissions/{id}/verify`): Confirms receipt of required funds.
-     - **Action B: REJECT** (`POST /api/v1/partner/payment-submissions/{id}/reject`): Rejects with mandatory reason (`UTR_NOT_FOUND`, `AMOUNT_MISMATCH`, `PAYMENT_DECLINED`).
-8. **Confirmation / Failure Outcomes:**
-   - **Upon Verification:** `rental_payment_demands` transitions to `VERIFIED`. `booking_holds` transitions to `CONVERTED`. A master `bookings` contract is created in `CONFIRMED` status. A `security_deposits` record is created in `HELD_BY_PARTNER` status. Customer is notified immediately.
-   - **Upon Rejection:** `rental_payment_submissions` transitions to `REJECTED`. Customer is alerted with the rejection reason. Customer may submit a corrected UTR within the remaining hold window, or the hold expires.
-   - **Pay-at-Pickup Authorized Flow:** If the partner allows cash/UPI at vehicle pickup, the hold converts to `CONFIRMED` with payment marked `PENDING_AT_PICKUP`. **Vehicle handover inspection is strictly blocked** until the partner logs verified collection of rental charges and security deposit at pickup.
+     - **Action A: VERIFY** (`POST /api/v1/partner/payment-submissions/{id}/verify`): Confirms receipt of funds.
+       * The verified amount is added to `rental_payment_demands.amount_satisfied`.
+       * If `amount_satisfied < amount_demanded`, the demand transitions to `PARTIALLY_SATISFIED`. The customer can submit top-up submissions for the outstanding balance.
+       * If `amount_satisfied >= amount_demanded`, the demand transitions to `SATISFIED`.
+       * If `amount_satisfied > amount_demanded` (overpayment), the demand transitions to `SATISFIED`, and the platform automatically creates an overpayment refund obligation in `rental_fee_refunds` (`refund_reason = OVERPAYMENT_RETURN`).
+     - **Action B: REJECT** (`POST /api/v1/partner/payment-submissions/{id}/reject`): Rejects with mandatory reason (`UTR_NOT_FOUND`, `AMOUNT_MISMATCH`, `PAYMENT_DECLINED`). The submission transitions to `REJECTED`. The demand remains `OPEN` or `PARTIALLY_SATISFIED`. Customer is alerted to submit a corrected payment.
+8. **Booking Confirmation Invariant:**
+   A booking can be confirmed ONLY when all of the following conditions are met simultaneously:
+   1. **Valid Calendar Availability & Vehicle Assignment:** Re-verified under an exclusive vehicle row lock (`SELECT id FROM vehicles WHERE id = :id FOR UPDATE`).
+   2. **Demand Satisfaction:** Applicable rental payment demands are `SATISFIED` through accumulated verified submissions, OR an explicit partner-approved pay-at-pickup policy permits the required unpaid balance.
+   3. **Deposit Policy Satisfied:** Any required security-deposit policy is satisfied (either pre-collected or flagged for pickup verification).
+   4. **Active Lock Window:** The booking hold is still valid (`status IN ('ACTIVE', 'VERIFICATION_PENDING')`) or the booking is otherwise safely revalidated under the vehicle lock.
+   - **Strict Concurrency Rule:** An expired hold must **NEVER** be silently converted to a confirmed booking.
+   - **Pay-at-Pickup Handover Gate:** For pay-at-pickup bookings, the booking is confirmed with payment status `PENDING_AT_PICKUP`, but **physical vehicle handover is strictly blocked** in the system until the partner logs verified collection of both rental charges and security deposit at vehicle handover.
 
 #### Exception & Edge Scenario Handling:
 - **Hold Expiration without Submission:** If customer does not submit payment within hold TTL (15m), hold transitions to `EXPIRED`. Vehicle calendar is freed immediately.
+- **Hold Expiration with Partial Payments:** If a hold expires while a demand is `PARTIALLY_SATISFIED`, the hold is released, the demand transitions to `EXPIRED`, and the partner is legally and operationally obligated to refund the accumulated verified partial payments via `rental_fee_refunds` (`refund_reason = LATE_PAYMENT_EXPIRED_HOLD`).
+- **Late Payment (Payment submitted after hold expiry or verified after expiry):**
+  - If a customer transfers money externally but submits UTR after the hold expired, or if the partner verifies payment after the hold expired:
+  - The system acquires the vehicle row lock and checks calendar availability.
+  - If the vehicle interval was booked by another customer in the interim, the booking **cannot be confirmed**. The system strictly forbids silent conversion.
+  - The platform creates an exception record in `rental_fee_refunds` with reason `LATE_PAYMENT_EXPIRED_HOLD`, binding the managing partner to return 100% of the funds directly to the customer.
 - **Partner Verification Timeout / Non-Response:** If partner does not verify within the verification window (60m):
   - System does NOT auto-confirm.
   - Escalates alert to Partner and Support/Admin.
-  - If timeout elapses without action, hold is released and customer is flagged for partner direct refund.
-- **Duplicate Reference Prevention:** Database constraint `uk_pay_submissions_ref` on (`payee_partner_id`, `transaction_reference`) prevents the same UTR from being submitted to the same partner twice.
-- **Payment Amount Mismatch:** If the customer transfers less than required, partner rejects submission with reason `INSUFFICIENT_AMOUNT`.
-- **Late Payment (Payment submitted after hold expiry):** If customer pays externally but submits UTR after hold expired:
-  - System re-checks vehicle availability. If available, customer can request hold reactivation and submit.
-  - If vehicle interval was booked by another customer in the interim, booking cannot be confirmed. System flags a payment mismatch exception, instructs customer to contact partner, and prompts partner to refund the transfer directly.
+  - If timeout elapses without action, hold is released and customer is flagged for partner direct refund via `rental_fee_refunds`.
+- **Duplicate Reference Prevention:** Database constraint `uk_submissions_partner_ref` on `(manager_partner_id, transaction_reference)` prevents the same UTR from being submitted to the same partner twice.
+- **Cash-at-Pickup Evidence:** When cash payment is accepted at pickup, the partner must enter the cash receipt voucher number and cash collection timestamp; the platform validates the managing partner's identity and records the transaction in `rental_payment_submissions` and `audit_logs`.
 
 ---
 
@@ -232,14 +222,74 @@ In the partner-direct model, **the rental partner directly collects, holds, and 
 
 ---
 
-### 5.5 Cancellation and No-Show Policies
+### 5.5 Rental-Fee Refund Tracking & Configurable Cancellation Rules
+
+Rental fee refunds are tracked independently in `rental_fee_refunds`. The rental partner directly executes all rental fee refunds outside the platform.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        PARTNER-DIRECT RENTAL-FEE REFUND LIFECYCLE                      │
+│                                                                                        │
+│  [Trigger: Cancellation / Overpayment / Expired-Hold Late Payment / Dispute Decision]  │
+│                                │                                                       │
+│                                ▼                                                       │
+│                 Status: PENDING_PARTNER_DISBURSEMENT                                   │
+│                                │                                                       │
+│                                ▼                                                       │
+│  Partner executes direct external transfer (UPI/NEFT/IMPS) and records UTR + receipt   │
+│                                │                                                       │
+│                                ▼                                                       │
+│                     Status: DISBURSED_BY_PARTNER                                       │
+│          (Partner UTR entry does NOT mean customer has received funds!)                │
+│                                │                                                       │
+│           ┌────────────────────┴────────────────────┐                                  │
+│           ▼                                         ▼                                  │
+│  [Customer Acknowledges Receipt]          [Customer Disputes Non-Receipt / Short Amt]  │
+│  (Or 72h dispute window expires)          (Within 72-hour window)                      │
+│           │                                         │                                  │
+│           ▼                                         ▼                                  │
+│  Status: CONFIRMED_BY_CUSTOMER             Status: DISPUTED_BY_CUSTOMER                │
+│                                                     │                                  │
+│                                                     ▼                                  │
+│                                            Admin Dispute Arbitration                   │
+│                                            (Inspects bank statements / UTR validity)   │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Configurable Cancellation & Refund Rules:
+1. **Configurable Business Rules (NOT Hardcoded):**
+   - Booking cancellation refund calculations are determined dynamically from configurable policy parameters snapshotted in `bookings.cancellation_policy_snapshot` or `rental_fee_refunds.cancellation_policy_snapshot`.
+   - Percentage tiers, flat fee deductions, and cancellation notice windows are maintained in system configuration and never hardcoded in source code.
+2. **Refund Calculation Data Elements:**
+   - **Cancellation Timestamp:** Time cancellation was requested.
+   - **Applicable Policy Tier:** Rule applied based on lead time before scheduled pickup.
+   - **Gross Amount Paid:** Total verified rental fee received by partner (`amount_satisfied`).
+   - **Cancellation Charge Deducted:** Retained fee calculated under the policy snapshot.
+   - **Refundable Rental Amount:** Net balance due to customer (`gross_amount_paid - cancellation_charge_deducted`).
+3. **Refund Responsibility:**
+   - The rental partner who received customer funds is solely responsible for transferring the refundable amount directly to the customer's bank account or UPI ID.
+   - The platform never holds customer rental funds and does not execute gateway refunds.
+4. **Evidence & Record-Keeping:**
+   - The partner logs the external Bank UTR, disbursement timestamp, and receipt image into `rental_fee_refunds`.
+   - Unique constraint `uk_rental_refunds_partner_utr` prevents reference recycling across disbursements.
+5. **Customer Dispute Workflow:**
+   - If the customer does not receive funds within 72 hours of partner disbursement, or if the received amount is short, the customer can open a dispute.
+   - The dispute moves to `ADMIN_ARBITRATION`. Admin inspects customer and partner bank proofs before issuing an administrative resolution.
+6. **Late-Payment Exceptions without Confirmed Booking:**
+   - When payment arrives or is verified on an expired hold, no confirmed booking exists.
+   - The platform records the refund in `rental_fee_refunds` referencing `hold_id` and `demand_id` with `booking_id = NULL` and `refund_reason = LATE_PAYMENT_EXPIRED_HOLD`.
+   - Ensures complete auditability and partner refund accountability even when inventory was lost.
+
+---
+
+### 5.6 Pre-Pickup Cancellation & No-Show Policies
 1. **Pre-Pickup Cancellation:**
-   - Customers may cancel prior to key handover. The system applies the policy snapshotted in `bookings.cancellation_policy_snapshot`.
-   - Security deposits are **100% refunded by the partner** because physical custody was never transferred.
-   - If cancelled by the rental partner (e.g. vehicle breakdown), the partner must issue a **100% full refund** (rental fee + deposit).
+   - Customers may cancel prior to key handover. The system applies the snapshotted cancellation policy.
+   - Security deposits are **100% refunded by the partner** via `security_deposit_refunds` because physical custody was never transferred.
+   - If cancelled by the rental partner (e.g. vehicle breakdown), the partner must issue a **100% full refund** of both rental fee and security deposit.
 2. **Customer No-Show:**
-   - If a customer fails to arrive for vehicle pickup within the 2-hour grace period, the partner marks the booking as `NO_SHOW`.
-   - The vehicle calendar is immediately freed for new reservations.
+   - If a customer fails to arrive within the 2-hour grace period, the partner marks the booking as `NO_SHOW`.
+   - Vehicle calendar is immediately freed for new reservations.
    - Rental fees are retained as liquidated damages per cancellation policy snapshot, while the **security deposit must be refunded in full (100%) by the partner**.
 
 ---
@@ -254,9 +304,10 @@ In the MVP, the marketplace operates as an operational record-keeping and bookin
 |---|---|---|
 | **Rental Service Provider & Payee** | **Rental Partner** | Customer-facing rental contractor and direct payee for all bookings on managed vehicles. Receives rental fees and deposits directly via partner UPI QR/ID/Cash. |
 | **Payment Verification** | **Rental Partner** | Independently checks bank/UPI credits and confirms or rejects submitted payment references. |
+| **Rental Fee Refunds** | **Rental Partner** | Executes rental-fee refunds directly to customer bank/UPI outside platform for cancellations, overpayments, expired-hold exceptions, and disputes. Logs Bank UTR and proof on platform. |
 | **Deposit Custody & Refunds** | **Rental Partner** | Holds security deposits and executes refunds directly to customer bank accounts. Logs Bank UTR and proof on platform. |
 | **Booking & Record Keeping** | **Platform** | Manages calendar availability, temporary reservation holds, payment instructions, submission workflows, and immutable audit logs. |
-| **Dispute Resolution** | **Platform Admin** | Arbitrates contested damage claims, payment disputes, and deposit deduction discrepancies based on inspection evidence. |
+| **Dispute Resolution** | **Platform Admin** | Arbitrates contested damage claims, payment disputes, rental fee refund disputes, and deposit deduction discrepancies based on inspection evidence. |
 | **Contributor Compensation** | **Rental Partner** | Sole contractual debtor for contributor fixed earnings. Pays contributor directly outside platform via external transfer. |
 
 ### 6.2 Contributor Compensation (Approach A Baseline)

@@ -47,6 +47,9 @@ Roles are **additive**. A single user account can hold `CUSTOMER` and `VEHICLE_C
 | | Acknowledge Direct Vehicle Handover | ✅ (Customer pickup) | ✅ (Direct handover/receipt) | ❌ | ✅ (Hub handover) | ✅ |
 | | Participate in Post-Rental Return Inspection | ✅ (Customer return) | ✅ (Agreement requirement) | ❌ | ✅ (Partner-managed) | ✅ |
 | | Log Vehicle Custody Transfer Event | ❌ | ✅ (Direct handover/return) | ❌ | ✅ (Hub/Relocation) | ✅ |
+| **Rental Fee Refunds** | Record Direct Rental Fee Refund (Cancellation/Overpayment) | ❌ | ❌ | ❌ | ✅ (Managed fleet) | ✅ |
+| | Acknowledge / Dispute Rental Fee Refund (72h Window) | ✅ (Own booking/hold) | ❌ | ❌ | ❌ | ❌ |
+| | Arbitrate Rental Fee Refund Dispute | ❌ | ❌ | ❌ | ❌ | ✅ (Audited) |
 | **Deposit & Refunds** | Log Damage Claim / Fuel Deficit | ❌ | ❌ | ❌ | ✅ (Managed fleet) | ✅ |
 | | Dispute Deposit Deduction (48h Window) | ✅ (Own booking) | ❌ | ❌ | ❌ | ❌ |
 | | Review / Arbitrate Deposit Dispute | ❌ | ❌ | ❌ | ❌ | ✅ (Audited) |
@@ -79,10 +82,12 @@ A verified vehicle contributor has the explicit capability to:
   3. **Manage Accepted Contributor Fleet:** Accept contributor applications, propose binding agreements, configure vehicle listings, and assign vehicles to hubs.
   4. **Verify / Reject Customer Payments:** Independently inspect bank/UPI statements and verify or reject customer payment submissions. **Only partner action can verify a payment.**
   5. **Direct Deposit Custody & Refunds:** Receive security deposits directly, propose evidence-based deductions, and execute direct deposit refunds to customers outside the platform.
-  6. **Record Direct Contributor Settlements:** Under Approach A, record direct bank payments (NEFT/IMPS/UPI) made to contributors with mandatory UTR references, payment receipts, and dates in `contributor_payables`.
+  6. **Direct Rental-Fee Refund Execution:** Execute direct rental fee refunds outside the platform for cancellations, overpayment returns, expired-hold exceptions, or dispute resolutions, recording UTR references, receipts, and policy snapshots in `rental_fee_refunds`.
+  7. **Record Direct Contributor Settlements:** Under Approach A, record direct bank payments (NEFT/IMPS/UPI) made to contributors with mandatory UTR references, payment receipts, and dates in `contributor_payables`.
 
 ### 2.3 Customer Boundary & Privacy Rights
-- A customer must **only** access their own bookings, payment demands, payment submissions, security deposit records, refund statuses, and submitted verification documents.
+- A customer must **only** access their own bookings, payment demands, payment submissions, security deposit records, rental-fee refund records (`rental_fee_refunds`), refund statuses, and submitted verification documents.
+- Customers have a 72-hour window following partner disbursement of a rental-fee refund to acknowledge receipt or raise a dispute.
 - Customers must never see contributor fixed fees, partner internal financials, or private unmasked RC/PAN data of vehicle owners.
 
 ### 2.4 Administrative Access Controls
@@ -130,3 +135,8 @@ Every secure API endpoint enforces resource-level evaluators via Spring Security
 ### F. Contributor Payable Security (`@payableSecurity.canAccessPayable(payableId, principal)`)
 - Contributor can view only their own payables (`contributor_payables.contributor_user_id == principal.id`).
 - Partner can view and record settlements only for payables where `contributor_payables.partner_id == principal.partner_id`.
+
+### G. Rental Fee Refund Security (`@rentalRefundSecurity.canManageRefund(refundId, principal)`)
+- **CUSTOMER:** Can view only their own rental-fee refunds (`rental_fee_refunds.customer_user_id == principal.id`); can acknowledge receipt or dispute within 72 hours of disbursement.
+- **RENTAL_PARTNER:** Can view, initiate, and disburse rental-fee refunds ONLY for bookings/holds where `rental_fee_refunds.manager_partner_id == principal.partner_id`. Partner must be in `VERIFIED` status.
+- **ADMIN:** Full dispute arbitration, review of expired-hold exceptions, and administrative resolution.

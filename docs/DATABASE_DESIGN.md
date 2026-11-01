@@ -3,7 +3,7 @@
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh  
 **Status:** Database Design Freeze Candidate Baseline (Partner-Direct Payment Model)  
-**Confirmed Entity Count:** **47 Proposed Physical Tables** (45 Application-Domain Tables + 2 Infrastructure-Managed Tables) + **8 Future-Phase Tables**
+**Confirmed Entity Count:** **48 Proposed Physical Tables** (46 Application-Domain Tables + 2 Infrastructure-Managed Tables) + **8 Future-Phase Tables** (56 Total Cataloged Entities)
 
 > [!IMPORTANT]
 > **Pre-Implementation Notice:** This document defines the **proposed physical database schema** to be created via Flyway migrations in MySQL 8.0+. **No migrations or actual database schema have been generated yet.** Application code, JPA entities, and Flyway migration SQL scripts will only be authored after formal Product Owner database design freeze approval.
@@ -154,33 +154,37 @@
 
 ---
 
-## 8. Module 7: Partner Payment Profiles, Demands, Submissions & Deposits (7 Tables)
+## 8. Module 7: Partner Payment Profiles, Demands, Submissions & Deposits (8 Tables)
 
 ### 33. `partner_payment_profiles`
 - `id`, `partner_id` (FK $\rightarrow$ `partner_profiles.id`), `payee_display_name`, `upi_id`, `upi_qr_object_key`, `external_payment_url`, `is_pay_at_pickup_enabled`, `accepted_methods_json`, `payment_instructions_note`, `is_active`, `created_at`, `updated_at`. Unique on `partner_id`.
 - Stores partner direct payment collection coordinates. Does NOT store PINs, passwords, or sensitive bank secrets.
 
 ### 34. `rental_payment_demands`
-- `id`, `demand_reference`, `hold_id` (nullable), `booking_id` (nullable), `manager_partner_id`, `customer_user_id`, `demand_type` (`INITIAL_RENTAL`, `EXTENSION`, `DAMAGE_INVOICE`), `amount_demanded`, `security_deposit_demanded`, `currency`, `status` (`ISSUED`, `PAYMENT_SUBMITTED`, `VERIFIED`, `EXPIRED`, `CANCELLED`), `expires_at`, `verified_at`, `created_at`, `updated_at`. Unique on `demand_reference`.
+- `id`, `demand_reference`, `hold_id` (nullable), `booking_id` (nullable), `manager_partner_id`, `customer_user_id`, `demand_type` (`INITIAL_RENTAL`, `EXTENSION`, `DAMAGE_INVOICE`), `amount_demanded`, `amount_satisfied` (default 0.00), `security_deposit_demanded`, `currency`, `status` (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`), `expires_at`, `satisfied_at`, `created_at`, `updated_at`. Unique on `demand_reference`.
 - Records explicit payment obligations generated for reservations, extensions, or invoices.
 
 ### 35. `rental_payment_submissions`
 - `id`, `demand_id`, `hold_id` (nullable), `booking_id` (nullable), `customer_user_id`, `manager_partner_id`, `payment_method` (`UPI_QR`, `UPI_ID`, `EXTERNAL_LINK`, `CASH_AT_PICKUP`), `amount_submitted`, `currency`, `transaction_reference` (UTR Number / Cash receipt), `transaction_timestamp`, `receipt_object_key`, `status` (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`), `verified_by_user_id` (nullable), `verified_at`, `rejection_reason`, `notes`, `created_at`. Unique on `(manager_partner_id, transaction_reference)`.
 - Records customer payment submissions. **Invariant:** Customer upload NEVER auto-verifies; only explicit partner action marks `VERIFIED`.
 
-### 36. `security_deposits`
+### 36. `rental_fee_refunds`
+- `id`, `refund_reference`, `booking_id` (nullable), `demand_id` (nullable), `hold_id` (nullable), `manager_partner_id`, `customer_user_id`, `refund_reason` (`BOOKING_CANCELLATION`, `OVERPAYMENT_RETURN`, `LATE_PAYMENT_EXPIRED_HOLD`, `SERVICE_DEFICIENCY`, `DISPUTE_RESOLUTION`, `POLICY_EXCEPTION`), `cancellation_policy_snapshot` (JSON nullable), `gross_amount_paid`, `cancellation_fee_deducted` (default 0.00), `refund_amount`, `currency`, `refund_status` (`PENDING_PARTNER_DISBURSEMENT`, `DISBURSED_BY_PARTNER`, `CONFIRMED_BY_CUSTOMER`, `DISPUTED_BY_CUSTOMER`, `ADMIN_OVERRIDE`), `refund_method` (`UPI_TRANSFER`, `BANK_NEFT_IMPS`, `CASH`), `partner_transaction_reference` (UTR), `receipt_object_key`, `recorded_by_user_id`, `admin_arbitration_id` (nullable), `disbursed_at`, `acknowledged_at`, `dispute_reason`, `dispute_opened_at`, `created_at`, `updated_at`. Unique on `refund_reference` and `(manager_partner_id, partner_transaction_reference)`.
+- Audit trail of rental-fee refunds executed directly by the partner outside the platform.
+
+### 37. `security_deposits`
 - `id`, `booking_id` (FK $\rightarrow$ `bookings.id`), `manager_partner_id`, `customer_user_id`, `required_amount`, `collected_amount`, `collection_method`, `collection_reference`, `collection_evidence_object_key`, `total_deducted_amount`, `total_refunded_amount`, `status` (`PENDING_COLLECTION`, `COLLECTED_HELD_BY_PARTNER`, `DEDUCTION_PROPOSED`, `DISPUTED`, `PARTIALLY_REFUNDED`, `FULLY_REFUNDED`, `RETAINED_FOR_DAMAGE`, `CLOSED`), `collected_at`, `closed_at`, `created_at`, `updated_at`. Unique on `booking_id`.
 - Tracks security deposits directly held and refunded by the managing partner.
 
-### 37. `deposit_deductions`
+### 38. `deposit_deductions`
 - `id`, `security_deposit_id`, `incident_id` (nullable), `proposed_by_user_id`, `resolved_by_admin_id` (nullable), `deduction_type` (`DAMAGE_REPAIR`, `LATE_RETURN_PENALTY`, `FUEL_DEFICIT`, `CLEANING_FEE`, `TRAFFIC_CHALLAN`), `proposed_amount`, `approved_amount`, `evidence_summary`, `status` (`PROPOSED`, `DISPUTED`, `APPROVED_BY_ADMIN`, `AGREED_BY_CUSTOMER`, `CANCELLED`), `dispute_reason`, `dispute_opened_at`, `resolved_at`, `created_at`.
 - Granular damage claims against deposit. Disputed claims are never auto-approved upon 48h timeout; require Admin arbitration.
 
-### 38. `security_deposit_refunds`
+### 39. `security_deposit_refunds`
 - `id`, `security_deposit_id`, `booking_id`, `manager_partner_id`, `customer_user_id`, `refund_amount`, `currency`, `refund_method` (`UPI_TRANSFER`, `BANK_NEFT_IMPS`, `CASH`), `refund_transaction_reference` (UTR), `receipt_object_key`, `status` (`PROMISED`, `DISBURSED_BY_PARTNER`, `CONFIRMED_BY_CUSTOMER`, `DISPUTED_BY_CUSTOMER`, `ADMIN_OVERRIDE`), `refunded_at`, `acknowledged_at`, `dispute_notes`, `created_at`, `updated_at`. Unique on `(manager_partner_id, refund_transaction_reference)`.
 - Audit trail of deposit refunds executed directly by the partner outside the platform.
 
-### 39. `contributor_payables`
+### 40. `contributor_payables`
 - `id`, `booking_id`, `agreement_id`, `contributor_user_id`, `partner_id`, `fixed_amount`, `currency`, `payable_status` (`PENDING_RETURN`, `ELIGIBLE`, `SCHEDULED`, `SETTLED_BY_PARTNER`, `ACKNOWLEDGED`, `DISPUTED`, `CANCELLED`), `settlement_mode` (`DIRECT_PARTNER_SETTLED`), `bank_transaction_reference` (UTR), `receipt_document_object_key`, `partner_settled_at`, `contributor_acknowledged_at`, `created_at`, `updated_at`. Unique on `(booking_id, agreement_id)`.
 - Partner-specific obligation tracking model (NOT a platform general ledger liability). Enforces single, complete direct partner settlement with immutable payment evidence.
 
@@ -188,32 +192,32 @@
 
 ## 9. Module 8: Transactional Outbox, Support, Reviews & Auditing (6 Tables)
 
-### 40. `outbox_events`
+### 41. `outbox_events`
 - `id`, `aggregate_type`, `aggregate_id`, `event_type`, `payload_json`, `status` (`PENDING`, `PROCESSING`, `PROCESSED`, `FAILED`, `DEAD_LETTER`), `retry_count`, `next_retry_at`, `failure_reason`, `created_at`, `processed_at`. Resilient outbox for async media processing and notification delivery.
 
-### 41. `reviews`
+### 42. `reviews`
 - `id`, `booking_id`, `reviewer_user_id`, `vehicle_id`, `partner_id`, `rating_score`, `rating_cleanliness`, `rating_maintenance`, `review_text`, `moderation_status`, `created_at`. Unique on `booking_id`.
 
-### 42. `support_tickets`
+### 43. `support_tickets`
 - `id`, `ticket_number`, `user_id`, `booking_id` (nullable), `vehicle_id` (nullable), `assigned_admin_id` (nullable), `category`, `priority`, `status`, `subject`, `resolved_at`, `created_at`, `updated_at`. Unique on `ticket_number`.
 
-### 43. `support_ticket_messages`
+### 44. `support_ticket_messages`
 - `id`, `ticket_id`, `sender_user_id`, `message_body`, `attachment_object_key`, `is_internal_note`, `sent_at`.
 
-### 44. `notifications`
+### 45. `notifications`
 - `id`, `user_id`, `channel` (`IN_APP`, `EMAIL`, `SMS`), `template_code`, `title`, `message_content`, `payload_json`, `delivery_status`, `read_at`, `created_at`.
 
-### 45. `audit_logs`
+### 46. `audit_logs`
 - `id`, `actor_user_id` (nullable), `action`, `entity_type`, `entity_id`, `ip_address`, `correlation_id`, `metadata_json_redacted`, `occurred_at`. Immutable security, payment verification, and administrative audit log.
 
 ---
 
 ## 10. Module 9: Infrastructure-Managed Tables (2 Tables)
 
-### 46. `shedlock`
+### 47. `shedlock`
 - Managed directly by the ShedLock Spring library (`name` PK, `lock_until`, `locked_at`, `locked_by`). Distributed lock for scheduled jobs.
 
-### 47. `flyway_schema_history`
+### 48. `flyway_schema_history`
 - Managed directly by Flyway migration tool (`installed_rank` PK, `version`, `description`, `type`, `script`, `checksum`, `installed_by`, `installed_on`, `execution_time`, `success`).
 
 ---

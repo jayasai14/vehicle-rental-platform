@@ -3,18 +3,19 @@
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh  
 **Status:** Database Design Freeze Candidate Baseline  
-**Confirmed Physical Tables:** **47 Physical Tables** (45 Application-Domain Tables + 2 Infrastructure-Managed Tables) + **8 Future-Phase Tables**
+**Confirmed Physical Tables:** **48 Physical Tables** (46 Application-Domain Tables + 2 Infrastructure-Managed Tables) + **8 Future-Phase Tables** (56 Total Cataloged Entities)
 
 ---
 
 ## 1. Domain Modeling Principles & Foreign Key Integrity
 
-To maintain strict relational integrity across all 45 application-domain tables, the platform enforces:
+To maintain strict relational integrity across all 46 application-domain tables, the platform enforces:
 
 1. **Zero Unvalidated Polymorphic Foreign Keys:**  
-   Every business relationship (Vehicles, Bookings, Agreements, Custody Handovers, Inspections, Incidents, Deposits, Demands, Submissions, Payables) is bound via explicit, typed relational foreign keys with database constraints (`FOREIGN KEY REFERENCES`).
+   Every business relationship (Vehicles, Bookings, Agreements, Custody Handovers, Inspections, Incidents, Deposits, Demands, Submissions, Rental Refunds, Payables) is bound via explicit, typed relational foreign keys with database constraints (`FOREIGN KEY REFERENCES`).
    - In `vehicle_custody_events`, custodians are explicitly typed via `from_custodian_user_id` / `from_partner_hub_id` and `to_custodian_user_id` / `to_partner_hub_id`.
    - In `rental_payment_submissions`, submissions explicitly reference `rental_payment_demands.id`, `manager_partner_id`, and `customer_user_id`.
+   - In `rental_fee_refunds`, refunds explicitly reference `bookings.id` (nullable), `rental_payment_demands.id` (nullable), `booking_holds.id` (nullable), `manager_partner_id`, `customer_user_id`, and `recorded_by_user_id`.
 2. **Strict Separation of Legal Ownership, Operational Management, and Custody:**
    - **Individual Legal Owner (`legal_owner_user_id`):** References `users.id` (individual citizen named on the vehicle RC).
    - **Partner Business Legal Owner (`legal_owner_partner_id`):** References `partner_profiles.id` (commercial business entity owning the fleet asset).
@@ -31,13 +32,13 @@ To maintain strict relational integrity across all 45 application-domain tables,
    - Platform general ledger accounts (`GATEWAY_CLEARING`, `CUSTOMER_REFUNDABLE_LIABILITY`, etc.) and automated payout tables are moved to Future Phase.
 5. **Referential Deletion Controls:**
    - Dependent sub-assets (`vehicle_images`, `inspection_media`, `refresh_tokens`, `support_ticket_messages`) use `ON DELETE CASCADE`.
-   - Core domain, contract, and audit entities (`vehicles`, `bookings`, `agreements`, `inspections`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposits`, `security_deposit_refunds`, `contributor_payables`) strictly use `ON DELETE RESTRICT` to guarantee immutable audit trails.
+   - Core domain, contract, and audit entities (`vehicles`, `bookings`, `agreements`, `inspections`, `rental_payment_demands`, `rental_payment_submissions`, `rental_fee_refunds`, `security_deposits`, `security_deposit_refunds`, `contributor_payables`) strictly use `ON DELETE RESTRICT` to guarantee immutable audit trails.
 
 ---
 
-## 2. Comprehensive Master Entity Relationship Diagram (45 MVP Domain Tables)
+## 2. Comprehensive Master Entity Relationship Diagram (46 MVP Domain Tables)
 
-The following diagram explicitly models **all 45 application-domain tables** and their relational constraints.
+The following diagram explicitly models **all 46 application-domain tables** and their relational constraints.
 
 ```mermaid
 erDiagram
@@ -123,6 +124,14 @@ erDiagram
     partner_profiles ||--o{ rental_payment_submissions : "verifying_partner"
     users ||--o{ rental_payment_submissions : "verified_by_user"
 
+    bookings ||--o{ rental_fee_refunds : "booking_fee_refund"
+    rental_payment_demands ||--o{ rental_fee_refunds : "demand_refund"
+    booking_holds ||--o{ rental_fee_refunds : "expired_hold_refund"
+    partner_profiles ||--o{ rental_fee_refunds : "refunded_by_partner"
+    users ||--o{ rental_fee_refunds : "refunded_to_customer"
+    users ||--o{ rental_fee_refunds : "recorded_by"
+    users ||--o{ rental_fee_refunds : "admin_arbitration"
+
     bookings ||--|| security_deposits : "secured_by"
     partner_profiles ||--o{ security_deposits : "held_by_partner"
     users ||--o{ security_deposits : "deposited_by_customer"
@@ -160,17 +169,17 @@ erDiagram
 
 ---
 
-## 3. Comprehensive Referential Integrity Matrix (All 45 MVP Domain Tables)
+## 3. Comprehensive Referential Integrity Matrix (All 46 MVP Domain Tables)
 
 | # | Entity Name | Primary Relational Parent(s) (FK) | Child Entities (Referenced By) | Cardinality & Deletion Rules |
 |---|---|---|---|---|
-| 1 | `users` | None | `user_roles`, `customer_profiles`, `partner_profiles`, `contributor_profiles`, `kyc_verifications`, `driving_licences`, `addresses`, `refresh_tokens`, `vehicles` (individual owner), `bookings`, `inspections`, `rental_payment_submissions`, `security_deposits`, `security_deposit_refunds`, `contributor_payables`, `reviews`, `support_tickets`, `notifications`, `audit_logs`, `vehicle_custody_events` | 1-to-N (`CASCADE` for tokens/addresses; `RESTRICT` for operational/contract entities) |
+| 1 | `users` | None | `user_roles`, `customer_profiles`, `partner_profiles`, `contributor_profiles`, `kyc_verifications`, `driving_licences`, `addresses`, `refresh_tokens`, `vehicles` (individual owner), `bookings`, `inspections`, `rental_payment_submissions`, `rental_fee_refunds`, `security_deposits`, `security_deposit_refunds`, `contributor_payables`, `reviews`, `support_tickets`, `notifications`, `audit_logs`, `vehicle_custody_events` | 1-to-N (`CASCADE` for tokens/addresses; `RESTRICT` for operational/contract entities) |
 | 2 | `roles` | None | `user_roles` | 1-to-N (`ON DELETE RESTRICT`) |
 | 3 | `user_roles` | `users`, `roles` | None | N-to-1 (`CASCADE` on user, `RESTRICT` on role) |
 | 4 | `refresh_tokens` | `users` | None | N-to-1 (`CASCADE` on user) |
 | 5 | `addresses` | `cities`, `users` (nullable) | `customer_profiles`, `partner_hubs`, `pickup_locations`, `vehicle_custody_events` | 1-to-N (`RESTRICT` on cities/hubs/locations) |
 | 6 | `customer_profiles`| `users`, `addresses` | None | 1-to-1 with `users` (`CASCADE`) |
-| 7 | `partner_profiles` | `users` | `partner_documents`, `partner_payment_profiles`, `partner_hubs`, `vehicles` (as business owner & manager), `contribution_agreements`, `bookings`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposits`, `security_deposit_refunds`, `contributor_payables` | 1-to-1 with `users` (`RESTRICT`) |
+| 7 | `partner_profiles` | `users` | `partner_documents`, `partner_payment_profiles`, `partner_hubs`, `vehicles` (as business owner & manager), `contribution_agreements`, `bookings`, `rental_payment_demands`, `rental_payment_submissions`, `rental_fee_refunds`, `security_deposits`, `security_deposit_refunds`, `contributor_payables` | 1-to-1 with `users` (`RESTRICT`) |
 | 8 | `partner_documents`| `partner_profiles` | None | N-to-1 (`CASCADE` on partner) |
 | 9 | `contributor_profiles`| `users` | None | 1-to-1 with `users` (`CASCADE`) |
 | 10| `driving_licences` | `users` | None | 1-to-1 with `users` (`CASCADE`) |
@@ -189,32 +198,33 @@ erDiagram
 | 23| `contribution_agreements`| `vehicles`, `users`, `partner_profiles` | `contribution_agreement_events`, `vehicle_withdrawal_requests`, `contributor_payables` | N-to-1 (`RESTRICT`) |
 | 24| `contribution_agreement_events`| `contribution_agreements`, `users` | None | N-to-1 (`CASCADE` on agreement) |
 | 25| `vehicle_withdrawal_requests`| `vehicles`, `contribution_agreements`, `users` | None | N-to-1 (`RESTRICT`) |
-| 26| `booking_holds` | `vehicles`, `users` | `bookings` (optional convert link), `rental_payment_demands`, `rental_payment_submissions` | N-to-1 (`RESTRICT`) |
-| 27| `bookings` | `vehicles`, `booking_holds` (null), `users`, `partner_profiles`, `pickup_locations` | `booking_status_events`, `booking_extensions`, `inspections`, `incidents`, `security_deposits`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposit_refunds`, `contributor_payables`, `reviews`, `support_tickets` | N-to-1 (`RESTRICT`) |
+| 26| `booking_holds` | `vehicles`, `users` | `bookings` (optional convert link), `rental_payment_demands`, `rental_payment_submissions`, `rental_fee_refunds` | N-to-1 (`RESTRICT`) |
+| 27| `bookings` | `vehicles`, `booking_holds` (null), `users`, `partner_profiles`, `pickup_locations` | `booking_status_events`, `booking_extensions`, `inspections`, `incidents`, `rental_fee_refunds`, `security_deposits`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposit_refunds`, `contributor_payables`, `reviews`, `support_tickets` | N-to-1 (`RESTRICT`) |
 | 28| `booking_status_events`| `bookings`, `users` (null) | None | N-to-1 (`CASCADE` on booking) |
 | 29| `booking_extensions`| `bookings`, `users` (null) | None | N-to-1 (`RESTRICT`) |
 | 30| `inspections` | `bookings` (null), `vehicles`, `users` | `inspection_media`, `vehicle_custody_events` | N-to-1 (`RESTRICT`) |
 | 31| `inspection_media`| `inspections` | None | N-to-1 (`CASCADE` on inspection) |
 | 32| `incidents` | `bookings`, `vehicles`, `users` | `deposit_deductions` | N-to-1 (`RESTRICT`) |
 | 33| `partner_payment_profiles` | `partner_profiles` | None | 1-to-1 with `partner_profiles` (`CASCADE`) |
-| 34| `rental_payment_demands` | `booking_holds` (null), `bookings` (null), `partner_profiles`, `users` | `rental_payment_submissions` | N-to-1 (`RESTRICT`) |
+| 34| `rental_payment_demands` | `booking_holds` (null), `bookings` (null), `partner_profiles`, `users` | `rental_payment_submissions`, `rental_fee_refunds` | N-to-1 (`RESTRICT`) |
 | 35| `rental_payment_submissions`| `rental_payment_demands`, `booking_holds` (null), `bookings` (null), `users`, `partner_profiles` | None | N-to-1 (`RESTRICT`) |
-| 36| `security_deposits`| `bookings`, `partner_profiles`, `users` | `deposit_deductions`, `security_deposit_refunds` | 1-to-1 with `bookings` (`RESTRICT`) |
-| 37| `deposit_deductions`| `security_deposits`, `incidents` (null), `users` (null) | None | N-to-1 (`RESTRICT`) |
-| 38| `security_deposit_refunds` | `security_deposits`, `bookings`, `partner_profiles`, `users` | None | N-to-1 (`RESTRICT`) |
-| 39| `contributor_payables`| `bookings`, `contribution_agreements`, `users`, `partner_profiles` | None | 1-to-1 with `bookings` (`RESTRICT`) |
-| 40| `outbox_events` | Typed aggregate references (`bookings`, `demands`, `submissions`) | None | Append-only integration queue (Zero FKs) |
-| 41| `reviews` | `bookings`, `users`, `vehicles`, `partner_profiles` | None | 1-to-1 with `bookings` (`RESTRICT`) |
-| 42| `support_tickets`| `users`, `bookings` (null), `vehicles` (null), `users` (admin) | `support_ticket_messages` | N-to-1 (`RESTRICT`) |
-| 43| `support_ticket_messages`| `support_tickets`, `users` | None | N-to-1 (`CASCADE` on ticket) |
-| 44| `notifications` | `users` | None | N-to-1 (`CASCADE` on user) |
-| 45| `audit_logs` | `users` (actor, null) | None | Append-only security audit log |
+| 36| `rental_fee_refunds` | `bookings` (null), `rental_payment_demands` (null), `booking_holds` (null), `partner_profiles`, `users` (customer), `users` (recorded_by), `users` (admin, null) | None | N-to-1 (`RESTRICT` on all explicit foreign keys) |
+| 37| `security_deposits`| `bookings`, `partner_profiles`, `users` | `deposit_deductions`, `security_deposit_refunds` | 1-to-1 with `bookings` (`RESTRICT`) |
+| 38| `deposit_deductions`| `security_deposits`, `incidents` (null), `users` (null) | None | N-to-1 (`RESTRICT`) |
+| 39| `security_deposit_refunds` | `security_deposits`, `bookings`, `partner_profiles`, `users` | None | N-to-1 (`RESTRICT`) |
+| 40| `contributor_payables`| `bookings`, `contribution_agreements`, `users`, `partner_profiles` | None | 1-to-1 with `bookings` (`RESTRICT`) |
+| 41| `outbox_events` | Typed aggregate references (`bookings`, `demands`, `submissions`) | None | Append-only integration queue (Zero FKs) |
+| 42| `reviews` | `bookings`, `users`, `vehicles`, `partner_profiles` | None | 1-to-1 with `bookings` (`RESTRICT`) |
+| 43| `support_tickets`| `users`, `bookings` (null), `vehicles` (null), `users` (admin) | `support_ticket_messages` | N-to-1 (`RESTRICT`) |
+| 44| `support_ticket_messages`| `support_tickets`, `users` | None | N-to-1 (`CASCADE` on ticket) |
+| 45| `notifications` | `users` | None | N-to-1 (`CASCADE` on user) |
+| 46| `audit_logs` | `users` (actor, null) | None | Append-only security audit log |
 
 ---
 
 ## 4. Infrastructure Tables (Framework-Managed)
 
-The 2 physical tables in the confirmed 47-table physical count are strictly framework-managed:
+The 2 physical tables in the confirmed 48-table physical count are strictly framework-managed:
 - **`shedlock`**: Managed directly by the ShedLock Spring library (`name` PK, `lock_until`, `locked_at`, `locked_by`).
 - **`flyway_schema_history`**: Managed directly by Flyway migration engine (`installed_rank` PK, `version`, `script`, `checksum`, `success`).
 Neither table participates in application-domain relational foreign keys.

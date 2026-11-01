@@ -1,11 +1,11 @@
-# Final Architecture Review & Reconciliation Report: Partner-Direct Payment Model
+# Final Architecture Review & Reconciliation Report: Partner-Direct Payment Model & Refunds Correction
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
 **Lead Roles:** Lead Software Architect & Database Architect  
 **Technology Stack:** React + Vite, Tailwind CSS, Spring Boot, Spring Security, MySQL 8.0+, JWT + BCrypt  
-**Status:** **Reconciled & Frozen Database Design Baseline (Partner-Direct Payment Architecture)**  
-**Physical Table Baseline:** **47 Physical MySQL Tables for MVP** (45 Application-Domain Tables + 2 Infrastructure-Managed Tables) + **8 Future-Phase Tables** (55 Total Cataloged Entities)  
+**Status:** **Reconciled & Frozen Database Design Baseline (Partner-Direct Payment & Refund Architecture)**  
+**Physical Table Baseline:** **48 Physical MySQL Tables for MVP** (46 Application-Domain Tables + 2 Infrastructure-Managed Tables) + **8 Future-Phase Tables** (56 Total Cataloged Entities)  
 **Governing Document Set:**  
 1. [README.md](../README.md)  
 2. [docs/PROJECT_CONSTITUTION.md](PROJECT_CONSTITUTION.md)  
@@ -25,120 +25,193 @@
 
 ---
 
-## 1. Final Payment Architecture Decision
+## 1. Exact Changes Made
 
-The MVP adopts **PARTNER-DIRECT PAYMENT COLLECTION** (formalized in ADR-018):
-- **Direct Payee:** The rental partner managing a vehicle is the customer-facing rental service provider and direct payee for that vehicle's bookings.
-- **Zero Platform Cash Handling:** The platform does NOT collect, hold, escrow, split, or disburse customer rental money or security deposits in the MVP.
-- **Accepted Payment Channels:**
-  - Partner's UPI QR code (image displayed at checkout).
-  - Partner's UPI ID / VPA (displayed with copy button).
-  - Partner's external payment link (if configured).
-  - Cash at pickup (only when the partner explicitly enables and accepts this method).
-- **No Platform Gateway Account:** No platform-owned Razorpay or payment aggregator merchant account is integrated for customer rental checkout in the MVP.
-- **No Marketplace Settlement in MVP:** Razorpay Route, marketplace split settlements, automated partner payouts, and platform general ledger double-entry accounting for customer rentals are deferred to Future Phase.
-- **Provider-Agnostic Boundary:** Core payment demand, submission, and verification abstractions remain decoupled from any proprietary gateway vendor.
-- **Merchant of Record Demarcation:** The platform does not assume Merchant of Record status. The partner-as-service-provider and partner-as-payee model is documented as an architectural decision subject to legal, tax, and insurance validation before production launch.
-- **Pre-Implementation Notice:** All specifications represent the **proposed database and system architecture**. No application code, JPA entities, or Flyway SQL migrations have been generated yet.
+This architecture correction resolves two critical design gaps identified during final review:
 
----
+1. **Addition of Rental-Fee Refund Tracking (`rental_fee_refunds`):**
+   - Introduced a dedicated MVP application-domain table (`rental_fee_refunds`, Table 36 in Module 7) to track rental-fee refund lifecycles separately from security deposit refunds (`security_deposit_refunds`, Table 39).
+   - Covers rental-fee refunds for booking cancellations, payment exceptions, overpayments, late payments on expired booking holds, and Admin-approved dispute resolutions.
+   - Enforced the **Partner UTR Non-Equivalence Invariant**: a partner-entered UTR marks status `DISBURSED_BY_PARTNER` but does **not** automatically indicate customer receipt. The customer has a 72-hour window to acknowledge receipt or raise a dispute.
 
-## 2. Customer Rental Payment Lifecycle
+2. **Configurable Refund Policies (No Hardcoded Percentages):**
+   - Removed all hardcoded cancellation tiers and percentages.
+   - Introduced dynamic rule evaluation with an immutable audit snapshot stored in `rental_fee_refunds.cancellation_policy_snapshot` (JSON) capturing the cancellation timestamp, applicable rule identifier, gross paid amount, fee deducted (if any), and net refundable amount.
 
-The rental payment lifecycle is redesigned for manual partner-direct collection:
+3. **Decoupled Payment Demand and Submission State Machines:**
+   - Separated the financial obligation owed (`rental_payment_demands`) from individual customer payment attempts (`rental_payment_submissions`).
+   - Demand States: `OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`.
+   - Submission States: `SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`.
+   - Supported multi-submission accumulation: verified partial submissions accumulate in `amount_satisfied` until the demand is satisfied.
+   - Defined top-up workflows for underpayments and automated refund obligation creation for verified overpayments.
 
-### 2.1 The 10-Step Customer Payment & Verification Flow:
-1. **Vehicle Selection & Hold Request:** Customer selects a vehicle, dates, and pickup mode, and initiates checkout.
-2. **Temporary Availability Hold:** The system acquires a pessimistic row lock (`SELECT id FROM vehicles WHERE id = :id FOR UPDATE`) and creates a 15-minute temporary reservation hold (`booking_holds`, status: `ACTIVE`). Master booking row is **NOT** inserted.
-3. **Display Partner Payment Instructions:** System displays the managing partner's payment profile: payee business name, UPI QR image, UPI ID, external link (if configured), amount due, and verification window countdown timer.
-4. **Direct Payment Execution:** Customer makes the payment directly to the managing partner outside the platform.
-5. **Customer Reference Submission:** Customer submits payment proof: transaction reference (Bank UTR / Cash receipt), payment method used, exact amount transferred, transaction timestamp, and optional receipt image.
-6. **Verification Pending & Hold Lock Extension:** Payment submission transitions to `SUBMITTED_FOR_VERIFICATION`. The hold transitions to `VERIFICATION_PENDING` with its TTL extended by the configurable verification window (e.g. 60 minutes), preserving inventory locking.
-7. **Partner Independent Verification:** Managing partner inspects their own bank account statement or UPI app to confirm inward fund credit.
-8. **Partner Verification / Rejection Action:** Partner clicks "Verify Payment" or "Reject Payment" (with mandatory reason).
-9. **Strict Verification Invariant:** **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as verified or confirm a booking.** ONLY an explicit partner API action marks the submission `VERIFIED`.
-10. **Booking Confirmation:** Only upon verified payment confirmation (or under a partner-approved pay-at-pickup policy) does the master booking record transition to `CONFIRMED`.
+4. **Unified Booking Confirmation Invariant:**
+   - Standardized the booking confirmation invariant across all documents: a booking transitions to `CONFIRMED` only when (1) exclusive vehicle lock is acquired; (2) demands are `SATISFIED` through verified submissions, OR an explicit partner-approved pay-at-pickup policy applies; (3) required security deposit conditions are satisfied; and (4) the booking hold is valid (`ACTIVE` or `VERIFICATION_PENDING`) or safely revalidated under the vehicle lock.
+   - Expired holds are never silently confirmed. Late payments on expired holds where the vehicle was reallocated are refunded via `rental_fee_refunds`.
+   - For pay-at-pickup bookings, vehicle handover is blocked until pickup collections are verified.
 
-### 2.2 State Transitions & Failure Scenarios:
-- **`rental_payment_demands` Lifecycle:** `ISSUED` $\rightarrow$ `PAYMENT_SUBMITTED` $\rightarrow$ `VERIFIED` (Terminal), with failure branches to `EXPIRED` or `CANCELLED`.
-- **`rental_payment_submissions` Lifecycle:** `SUBMITTED_FOR_VERIFICATION` $\rightarrow$ `VERIFIED` (Terminal) or `REJECTED` (Customer may re-submit if hold valid).
-- **Duplicate Reference Prevention:** Database unique constraint on `(manager_partner_id, transaction_reference)` prevents recycling UTR numbers.
-- **Payment Amount Mismatch:** If customer pays ₹1,000 against a ₹1,500 demand, partner rejects with `AMOUNT_MISMATCH`; customer can submit a top-up reference.
-- **Expired Hold & Late Payment:** If customer pays after the 15-minute hold expires and inventory is taken by another customer, booking is **NOT** silently confirmed. The system logs a `LATE_PAYMENT_EXCEPTION`, and partner executes an external refund outside the platform.
-- **Partner Non-Response:** If partner does not verify within 60 minutes, hold expires to prevent indefinite vehicle calendar locking. Automated reminders trigger at 30m and 45m. Support ticket workflow arbitrates late verifications.
+5. **Recalculated Table Inventory Baseline:**
+   - Module 7 increased from 7 to 8 tables.
+   - Application-domain tables increased from 45 to 46.
+   - Infrastructure tables remain 2 (`shedlock`, `flyway_schema_history`).
+   - Total MVP physical MySQL tables increased from 47 to 48.
+   - Future-phase tables remain 8. Total cataloged database entities: 56.
 
 ---
 
-## 3. Security Deposit and Refund Lifecycle
+## 2. New `rental_fee_refunds` Schema & Relationships
 
-- **Direct Partner Custody:** The rental partner directly receives and holds the customer's security deposit.
-- **Refundable Liability:** The deposit is tracked in `security_deposits` as a customer refundable liability in partner custody, never as platform revenue or escrow.
-- **Evidence-Based Deductions:**
-  - Partner proposes deductions (`deposit_deductions`) with mandatory pre-rental vs. post-rental inspection photos, odometer readings, and repair estimates.
-  - **No Automatic Approval:** A disputed damage claim is **NEVER** automatically approved merely because a 48-hour response window expires. Disputed claims enter `ADMIN_ARBITRATION`. Non-responsive claims require Admin verification before deduction approval.
-- **Immediate Release of Undisputed Balances:** Any uncontested portion of a security deposit must be refunded immediately by the partner outside the platform.
-- **Direct Partner Refund Flow (`security_deposit_refunds`):**
-  - Partner transfers refund directly to customer via UPI/NEFT outside platform.
-  - Partner inputs Bank UTR reference, payment date, and optional receipt proof.
-  - Status moves from `PROMISED` $\rightarrow$ `DISBURSED_BY_PARTNER` $\rightarrow$ `CONFIRMED_BY_CUSTOMER`.
-  - Customer can confirm or dispute refund within 72 hours.
-- **Zero Platform Gateway Transfers:** The platform records, monitors, and audits refunds, but does not execute external gateway refund transactions.
+### 2.1 Schema Definition:
+```sql
+CREATE TABLE rental_fee_refunds (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    refund_reference VARCHAR(32) NOT NULL,
+    booking_id BIGINT UNSIGNED NULL,
+    demand_id BIGINT UNSIGNED NULL,
+    hold_id BIGINT UNSIGNED NULL,
+    manager_partner_id BIGINT UNSIGNED NOT NULL,
+    customer_user_id BIGINT UNSIGNED NOT NULL,
+    refund_reason ENUM('BOOKING_CANCELLATION', 'OVERPAYMENT_RETURN', 'EXPIRED_HOLD_EXCEPTION', 'PAYMENT_MISMATCH_RETURN', 'ADMIN_ARBITRATION_ORDER', 'OTHER_EXCEPTION') NOT NULL,
+    cancellation_policy_snapshot JSON NULL,
+    gross_amount_paid DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    cancellation_fee_deducted DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    refund_amount DECIMAL(10,2) NOT NULL,
+    currency CHAR(3) NOT NULL DEFAULT 'INR',
+    refund_status ENUM('PENDING_PARTNER_DISBURSEMENT', 'DISBURSED_BY_PARTNER', 'CONFIRMED_BY_CUSTOMER', 'DISPUTED_BY_CUSTOMER', 'ADMIN_OVERRIDE') NOT NULL DEFAULT 'PENDING_PARTNER_DISBURSEMENT',
+    refund_method ENUM('UPI_TRANSFER', 'BANK_NEFT_IMPS', 'CASH_RETURN') NOT NULL,
+    partner_transaction_reference VARCHAR(100) NULL,
+    receipt_object_key VARCHAR(255) NULL,
+    recorded_by_user_id BIGINT UNSIGNED NOT NULL,
+    admin_arbitration_id BIGINT UNSIGNED NULL,
+    disbursed_at DATETIME NULL,
+    acknowledged_at DATETIME NULL,
+    dispute_reason VARCHAR(500) NULL,
+    dispute_opened_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    CONSTRAINT uk_rental_refunds_ref UNIQUE (refund_reference),
+    CONSTRAINT uk_rental_refunds_partner_utr UNIQUE (manager_partner_id, partner_transaction_reference),
+    CONSTRAINT fk_rental_refunds_booking FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_rental_refunds_demand FOREIGN KEY (demand_id) REFERENCES rental_payment_demands(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_rental_refunds_hold FOREIGN KEY (hold_id) REFERENCES booking_holds(id) ON DELETE SET NULL,
+    CONSTRAINT fk_rental_refunds_partner FOREIGN KEY (manager_partner_id) REFERENCES partner_profiles(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_rental_refunds_customer FOREIGN KEY (customer_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_rental_refunds_recorder FOREIGN KEY (recorded_by_user_id) REFERENCES users(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_rental_refunds_arbitrator FOREIGN KEY (admin_arbitration_id) REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT chk_rental_refunds_amounts CHECK (refund_amount > 0 AND refund_amount <= gross_amount_paid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
 
----
-
-## 4. Contributor Compensation Lifecycle (Approach A)
-
-The platform preserves the established business model:
-- **Bilateral Agreement:** Contributor submits vehicle; partner accepts under a signed agreement (`contribution_agreements`) with an agreed fixed fee per eligible booking (e.g. ₹800).
-- **Single Lump-Sum Model:** Each completed booking generates exactly one indivisible contributor payable (`contributor_payables`). Partial payments or installment disbursements are prohibited at domain and database levels.
-- **Operational Trigger:** Payable transitions to `ELIGIBLE` strictly upon vehicle return and signed return inspection (`bookings.booking_status = COMPLETED`).
-- **Direct Settlement:** Partner pays contributor directly outside the platform via NEFT/IMPS/UPI.
-- **Platform Tracking:** Partner logs Bank UTR number, settlement date, and receipt attachment. Contributor confirms receipt or disputes invalid UTR within 7 days.
-- **Zero Platform Cash Entry:** Partner-to-contributor payments are **never represented as platform cash movements or platform general ledger transactions** because platform funds are completely untouched.
-
----
-
-## 5. Final Responsibility Matrix
-
-| Operational & Financial Domain | Responsible Entity | Real-World Money Movement | Platform Manifestation |
-|---|---|---|---|
-| **Rental Service Provider** | **Rental Partner** | Furnishes vehicle, manages physical handover, executes return inspection. | Partner profile verified by Admin; partner legally contracts rental service. |
-| **Customer Rental Payee** | **Rental Partner** | Directly receives rental charges via UPI QR, UPI ID, payment link, or cash at pickup. | Displays partner payment profile, issues demands, captures submissions. Zero platform cash handling. |
-| **Security Deposit Custodian** | **Rental Partner** | Receives and holds customer deposit directly in partner bank account or cash. | Tracked in `security_deposits` as partner-held liability. Platform holds zero escrow. |
-| **Customer Refund Execution** | **Rental Partner** | Directly transfers funds back to customer via UPI/NEFT outside platform. | Records refund obligations, partner UTR proof, and customer confirmations in `security_deposit_refunds`. |
-| **Payment Verification Gate** | **Rental Partner** | Independently inspects bank statements for inward credit. | **Strict Invariant:** ONLY partner verification confirms payment. Customer upload never auto-verifies. |
-| **Contributor Compensation Debtor** | **Rental Partner** | Pays contributor agreed fixed compensation directly outside platform. | Obligation tracked in `contributor_payables`. Single lump-sum model. Zero platform debt. |
-| **Dispute Arbitration** | **Platform Admin** | Evaluates inspection photos, damage claims, and payment receipts if parties dispute. | Admin mediation workflows in `deposit_deductions` and support ticketing. |
-| **Platform Monetization** | **Platform Operating Entity** | Independent commercial model (e.g., partner subscriptions or listing fees). | **Zero deductions from customer rental payments.** No commission splitting in MVP. |
-
----
-
-## 6. Database Table Inventory Reconciliation
-
-### 6.1 Tables Added (1 Table):
-1. `partner_payment_profiles`: Managing partner's direct payment receiving configuration (UPI QR image key, UPI ID, external payment link, cash-at-pickup toggle, accepted methods).
-
-### 6.2 Tables Renamed (3 Tables):
-1. `payment_orders` $\rightarrow$ `rental_payment_demands`: Clarifies that this records explicit payment obligations demanded for reservations/extensions, not platform gateway orders.
-2. `payment_transactions` $\rightarrow$ `rental_payment_submissions`: Clarifies that this records customer-submitted direct payment proof (Bank UTR, amount, timestamp, receipt).
-3. `refunds` $\rightarrow$ `security_deposit_refunds`: Clarifies that this records partner direct deposit refunds outside platform, distinct from gateway refund API dispatches.
-
-### 6.3 Tables Moved to Future-Phase Marketplace Gateway (8 Tables):
-The following tables are formally preserved and deferred for future activation upon onboarding an approved marketplace payment provider (e.g., Razorpay Route):
-1. `payment_webhook_events`: Inward gateway webhook idempotency ledger.
-2. `partner_commissions`: Automated platform commission calculations.
-3. `payout_methods`: Tokenized partner linked payout accounts.
-4. `settlements`: Automated marketplace split disbursement batches.
-5. `ledger_accounts`: Platform general ledger Chart of Accounts Master.
-6. `ledger_transactions`: Platform general ledger journal transaction headers.
-7. `ledger_entries`: Platform append-only double-entry lines.
-8. `platform_commission_rules`: Configurable percentage and fee commission rules.
+### 2.2 Relational Integrity & Non-Polymorphism:
+- **Explicit Foreign Keys:** Every relationship uses strongly typed, explicit foreign keys. Zero polymorphic entity references.
+- **Relational Flexibility:**
+  - When refunding a cancelled confirmed booking: `booking_id` and `demand_id` are populated; `hold_id` is null or historical.
+  - When refunding a late payment on an expired hold: `hold_id` and `demand_id` are populated; `booking_id` is null (since no confirmed booking was created).
+  - When returning an overpayment on a confirmed booking: `booking_id` and `demand_id` are populated.
+- **Anti-Fraud Duplicate Prevention:** `uk_rental_refunds_partner_utr` (`manager_partner_id`, `partner_transaction_reference`) prevents recycling UTRs across different refund records.
 
 ---
 
-## 7. Corrected Table Count & Module Breakdown
+## 3. Corrected Payment Demand and Submission State Machines
 
-Every table is accounted for once and only once across the 9 modules:
+The demand represents the customer's financial obligation; the submission represents an individual payment attempt by the customer.
+
+```
+DEMAND LIFECYCLE (rental_payment_demands):
+  [OPEN] ──(Verified partial submission: amount_satisfied < demanded)──> [PARTIALLY_SATISFIED]
+     │                                                                           │
+     │──(Verified submission(s): amount_satisfied >= demanded)───────────────────┤
+     │                                                                           ▼
+     │                                                                      [SATISFIED] (Terminal)
+     │──(Hold expires without sufficient verified payments)─────────────────────> [EXPIRED]   (Terminal)
+     └──(Customer cancels hold / checkout aborted)─────────────────────────────> [CANCELLED] (Terminal)
+
+SUBMISSION LIFECYCLE (rental_payment_submissions):
+  [SUBMITTED_FOR_VERIFICATION] ──(Partner confirms inward bank credit)──> [VERIFIED] (Terminal)
+               │
+               └──(Partner rejects invalid UTR / bad receipt)───────────> [REJECTED] (Terminal)
+```
+
+### 3.1 State Transition Invariants:
+1. **Demand Creation:** A demand is generated upon checkout hold initiation (`OPEN`, `amount_satisfied = 0.00`).
+2. **Accumulation Rule:** Only submissions in `VERIFIED` status contribute to `amount_satisfied`. Submissions in `SUBMITTED_FOR_VERIFICATION` or `REJECTED` have zero impact on `amount_satisfied`.
+3. **Transition to `PARTIALLY_SATISFIED`:** Occurs when a verified submission yields `0 < amount_satisfied < amount_demanded`.
+4. **Transition to `SATISFIED`:** Occurs immediately when `amount_satisfied >= amount_demanded`.
+5. **No Auto-Verification:** Screenshots, customer notes, or bank SMS texts never transition submissions to `VERIFIED`. Only explicit partner API action marks a submission `VERIFIED`.
+
+---
+
+## 4. Rental-Fee Refund Lifecycle
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        RENTAL-FEE REFUND STATE MACHINE                                 │
+│                                                                                        │
+│  [PENDING_PARTNER_DISBURSEMENT]                                                        │
+│           │                                                                            │
+│           ▼ (Partner executes external bank/UPI transfer & enters UTR + receipt)       │
+│  [DISBURSED_BY_PARTNER] ◄─── Partner UTR Non-Equivalence: Customer NOT yet confirmed   │
+│     │               │                                                                  │
+│     │ (72h Timeout /│ Customer confirms receipt)                                       │
+│     ▼               ▼                                                                  │
+│  [CONFIRMED_BY_CUSTOMER] (Terminal)                                                    │
+│                     │                                                                  │
+│                     └──(Customer disputes non-receipt within 72h)                      │
+│                                     │                                                  │
+│                                     ▼                                                  │
+│                          [DISPUTED_BY_CUSTOMER]                                        │
+│                                     │                                                  │
+│                                     ▼ (Admin arbitrates bank proof / statement)        │
+│                             [ADMIN_OVERRIDE] (Terminal)                                │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.1 Rental-Fee Refund Conditions:
+1. **Confirmed Booking Cancellation:** Customer cancels pre-pickup. The system evaluates the configurable cancellation rule, calculates the cancellation fee and net refundable amount, snapshots the policy in `cancellation_policy_snapshot`, and inserts a `PENDING_PARTNER_DISBURSEMENT` refund record.
+2. **Overpayment Return:** Customer verified submissions exceed `amount_demanded`. The system flags `excess_amount` and automatically creates an `OVERPAYMENT_RETURN` refund record for the difference.
+3. **Expired-Hold Late Payment Exception:** Customer transfers funds after hold expiration and the vehicle is reallocated. Partner verifies inward credit but cannot confirm booking; partner initiates an `EXPIRED_HOLD_EXCEPTION` refund.
+4. **Admin Dispute Resolution:** Admin arbitrates a customer dispute in favor of a customer refund, generating an `ADMIN_ARBITRATION_ORDER` refund obligation.
+
+---
+
+## 5. Security-Deposit Refund Lifecycle
+
+Security deposits remain tracked in `security_deposits` (custody) and `security_deposit_refunds` (disbursements):
+1. **Direct Partner Custody:** Partner collects and holds customer deposit directly; tracked as a refundable customer liability.
+2. **Post-Rental Inspection:** Customer and partner sign return inspection (`bookings.booking_status = COMPLETED`).
+3. **Evidence-Based Deductions (`deposit_deductions`):** Partner proposes damage/fuel/late deductions with photographic evidence. Customer has 48 hours to agree or dispute. **Disputed deductions are never auto-approved upon timeout; Admin arbitration is required.**
+4. **Undisputed Balance Disbursement:** Partner transfers uncontested deposit balance directly to customer via UPI/Bank outside platform.
+5. **Audit Trail (`security_deposit_refunds`):** Partner inputs UTR and receipt; customer confirms or disputes within 72 hours.
+
+---
+
+## 6. Partial-Payment and Top-Up Handling
+
+The system supports multiple customer submissions against a single demand:
+1. **Scenario:** Demand amount due: ₹1,500.
+2. **Initial Submission:** Customer submits ₹1,000 with Bank UTR `UTR-001`.
+3. **Partner Verification:** Partner inspects bank statement, verifies ₹1,000 credit, and marks submission `VERIFIED`.
+4. **Demand Accumulation:** Demand `amount_satisfied` updates to ₹1,000. Because ₹1,000 < ₹1,500, demand transitions from `OPEN` to `PARTIALLY_SATISFIED`. Hold remains in `VERIFICATION_PENDING`.
+5. **Customer Top-Up:** UI prompts customer: *"₹1,000 verified. Remaining balance due: ₹500."* Customer transfers ₹500 and submits second submission with `UTR-002`.
+6. **Second Verification:** Partner verifies ₹500 credit. Demand `amount_satisfied` becomes ₹1,500.
+7. **Demand Satisfaction & Confirmation:** Demand transitions to `SATISFIED`. The booking confirmation invariant evaluates to true, converting hold to `CONVERTED` and booking to `CONFIRMED`.
+8. **Overpayment Handling:** If customer accidentally transferred ₹1,800 across submissions, `amount_satisfied` records ₹1,800. Demand transitions to `SATISFIED`, booking confirms, and an automated refund record of ₹300 is created in `rental_fee_refunds` (`refund_reason = 'OVERPAYMENT_RETURN'`).
+
+---
+
+## 7. Late-Payment Exception Handling
+
+When a customer pays after the 15-minute hold expires or while a verification was pending:
+1. **Hold Expiration:** If the hold TTL (initial 15m or verification extension 60m) expires before partner verification, the hold transitions to `EXPIRED`, demand transitions to `EXPIRED`, and the vehicle calendar is freed.
+2. **Partner Verification of Expired Hold:** If customer already sent money and partner confirms inward credit on an expired hold:
+   - **Case A (Vehicle Still Available):** Under pessimistic row lock (`SELECT ... FOR UPDATE`), system checks if vehicle remains unreserved. If available, partner revalidates and confirms booking.
+   - **Case B (Vehicle Reallocated or Unavailable):** If vehicle is booked by another customer or partner has blocked it, **the expired hold is NEVER silently confirmed**. The partner marks submission `VERIFIED`, system flags a `LATE_PAYMENT_EXCEPTION`, and automatically creates an `EXPIRED_HOLD_EXCEPTION` refund record in `rental_fee_refunds`.
+   - The partner transfers the full paid amount back to the customer outside the platform.
+
+---
+
+## 8. Updated Module-by-Module Physical Table Inventory
 
 ```
 ┌───────────────────────────────────────────────────────────────────┬───────────────┐
@@ -150,113 +223,92 @@ Every table is accounted for once and only once across the 9 modules:
 │ Module 4: Generic Vehicle Custody Tracking                        │ 1 table       │
 │ Module 5: Contributor Agreements & Fleet Proposals                │ 4 tables      │
 │ Module 6: Bookings, Holds, Extensions, Inspections & Incidents    │ 7 tables      │
-│ Module 7: Partner Payment Profiles, Demands, Submissions & Deposits│ 7 tables     │
+│ Module 7: Partner Payment Profiles, Demands, Submissions & Refunds│ 8 tables      │
 │ Module 8: Transactional Outbox, Support, Reviews & Auditing       │ 6 tables      │
 ├───────────────────────────────────────────────────────────────────┼───────────────┤
-│ TOTAL PROPOSED APPLICATION-DOMAIN TABLES FOR MVP                  │ 45 tables     │
+│ TOTAL PROPOSED APPLICATION-DOMAIN TABLES FOR MVP                  │ 46 tables     │
 │ Module 9: Infrastructure-Managed Tables (ShedLock & Flyway)       │ 2 tables      │
 ├───────────────────────────────────────────────────────────────────┼───────────────┤
-│ TOTAL PROPOSED PHYSICAL MYSQL TABLES FOR MVP                      │ 47 tables     │
+│ TOTAL PROPOSED PHYSICAL MYSQL TABLES FOR MVP                      │ 48 tables     │
 ├───────────────────────────────────────────────────────────────────┼───────────────┤
 │ Future-Phase Marketplace Gateway & Double-Entry Tables            │ 8 tables      │
 ├───────────────────────────────────────────────────────────────────┼───────────────┤
-│ TOTAL CATALOGED DATABASE ENTITIES                                 │ 55 tables     │
+│ TOTAL CATALOGED DATABASE ENTITIES                                 │ 56 tables     │
 └───────────────────────────────────────────────────────────────────┴───────────────┘
 ```
 
-### Module-by-Module Physical Table List:
-- **Module 1 (11):** `users`, `roles`, `user_roles`, `refresh_tokens`, `addresses`, `customer_profiles`, `partner_profiles`, `partner_documents`, `contributor_profiles`, `driving_licences`, `kyc_verifications`.
-- **Module 2 (3):** `cities`, `partner_hubs`, `pickup_locations`.
-- **Module 3 (6):** `vehicles`, `vehicle_documents`, `vehicle_pricing_profiles`, `vehicle_images`, `vehicle_features`, `vehicle_maintenance_blocks`.
-- **Module 4 (1):** `vehicle_custody_events`.
-- **Module 5 (4):** `contributor_vehicle_applications`, `contribution_agreements`, `contribution_agreement_events`, `vehicle_withdrawal_requests`.
-- **Module 6 (7):** `booking_holds`, `bookings`, `booking_status_events`, `booking_extensions`, `inspections`, `inspection_media`, `incidents`.
-- **Module 7 (7):** `partner_payment_profiles`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposits`, `deposit_deductions`, `security_deposit_refunds`, `contributor_payables`.
-- **Module 8 (6):** `outbox_events`, `reviews`, `support_tickets`, `support_ticket_messages`, `notifications`, `audit_logs`.
-- **Module 9 (2):** `shedlock`, `flyway_schema_history`.
+### Complete Physical Table Inventory (48 MVP Tables):
+- **Module 1: Identity, Access, KYC & Addresses (11):** Table 1 `users`, Table 2 `roles`, Table 3 `user_roles`, Table 4 `refresh_tokens`, Table 5 `addresses`, Table 6 `customer_profiles`, Table 7 `partner_profiles`, Table 8 `partner_documents`, Table 9 `contributor_profiles`, Table 10 `driving_licences`, Table 11 `kyc_verifications`.
+- **Module 2: Operating Locations, Partner Hubs & Logistics (3):** Table 12 `cities`, Table 13 `partner_hubs`, Table 14 `pickup_locations`.
+- **Module 3: Vehicle Inventory, Compliance & Pricing (6):** Table 15 `vehicles`, Table 16 `vehicle_documents`, Table 17 `vehicle_pricing_profiles`, Table 18 `vehicle_images`, Table 19 `vehicle_features`, Table 20 `vehicle_maintenance_blocks`.
+- **Module 4: Generic Vehicle Custody Tracking (1):** Table 21 `vehicle_custody_events`.
+- **Module 5: Contributor Agreements & Fleet Proposals (4):** Table 22 `contributor_vehicle_applications`, Table 23 `contribution_agreements`, Table 24 `contribution_agreement_events`, Table 25 `vehicle_withdrawal_requests`.
+- **Module 6: Bookings, Holds, Extensions, Inspections & Incidents (7):** Table 26 `booking_holds`, Table 27 `bookings`, Table 28 `booking_status_events`, Table 29 `booking_extensions`, Table 30 `inspections`, Table 31 `inspection_media`, Table 32 `incidents`.
+- **Module 7: Partner Payment Profiles, Demands, Submissions, Refunds & Deposits (8):** Table 33 `partner_payment_profiles`, Table 34 `rental_payment_demands`, Table 35 `rental_payment_submissions`, **Table 36 `rental_fee_refunds` (NEW)**, Table 37 `security_deposits`, Table 38 `deposit_deductions`, Table 39 `security_deposit_refunds`, Table 40 `contributor_payables`.
+- **Module 8: Transactional Outbox, Support, Reviews & Auditing (6):** Table 41 `outbox_events`, Table 42 `reviews`, Table 43 `support_tickets`, Table 44 `support_ticket_messages`, Table 45 `notifications`, Table 46 `audit_logs`.
+- **Module 9: Infrastructure-Managed Tables (2):** Table 47 `shedlock`, Table 48 `flyway_schema_history`.
 
 ---
 
-## 8. ERD Corrections & Missing Relationships Resolved
+## 9. Corrected Total Table Count
 
-1. **`vehicle_documents` Table Represented:** Formally cataloged as Table 16 in Module 3 and fully mapped to `vehicles` (`ON DELETE CASCADE`) in [ENTITY_RELATIONSHIPS.md](ENTITY_RELATIONSHIPS.md).
-2. **`outbox_events` Table Represented:** Formally cataloged as Table 40 in Module 8, functioning as an append-only transactional queue using typed aggregate references (`aggregate_type`, `aggregate_id`) without unvalidated foreign keys.
-3. **`partner_payment_profiles` Relationship:** Connected 1:1 to `partner_profiles.id` (`ON DELETE CASCADE`).
-4. **`rental_payment_demands` Relationships:** Connected to `booking_holds.id` (nullable), `bookings.id` (nullable), `manager_partner_id`, and `customer_user_id`.
-5. **`rental_payment_submissions` Relationships:** Connected to `rental_payment_demands.id`, `manager_partner_id`, `customer_user_id`, and `verified_by_user_id`.
-6. **`security_deposits` & `security_deposit_refunds` Relationships:** `security_deposits` connected 1:1 to `bookings.id`; `security_deposit_refunds` connected to `security_deposits.id` and `bookings.id`.
-7. **Zero Unvalidated Polymorphic Foreign Keys:** Every relationship uses explicit, typed relational foreign keys with database constraints.
+- **Previous Baseline:** 47 physical MySQL tables (45 application-domain + 2 infrastructure).
+- **Added Entity:** 1 application-domain table (`rental_fee_refunds`).
+- **Updated Baseline:** **48 physical MySQL tables for MVP** (46 application-domain + 2 infrastructure).
+- **Future-Phase Entities:** 8 tables (`payment_webhook_events`, `partner_commissions`, `payout_methods`, `settlements`, `ledger_accounts`, `ledger_transactions`, `ledger_entries`, `platform_commission_rules`).
+- **Total Cataloged Entities:** **56 tables**.
 
 ---
 
-## 9. Updated Documents & Exact Changed Sections
+## 10. Documents Updated
 
-All 15 governing repository documents have been updated and synchronized:
+Every governing document in the repository has been updated and synchronized:
 
-1. **`README.md`**: Added MVP Payment Architecture summary, updated Technology Stack, Core Roles, and documentation directory linking to the 47-table physical baseline.
-2. **`docs/PROJECT_CONSTITUTION.md`**: Updated Section 3.2, 3.3, 3.4, 3.5, and 4 to reflect partner-direct payment collection, zero platform cash handling, manual partner verification invariant, and 47-table physical schema baseline.
-3. **`docs/BUSINESS_REQUIREMENTS.md`**: Updated Section 5.2 (10-step partner-direct payment workflow, verification window, failure handling), Section 5.3 (handover blocked until payment verified), Section 5.4 (partner-direct deposit custody and refunds), Section 6 (responsibility matrix), and Section 7.2 (deferred marketplace gateway).
-4. **`docs/ARCHITECTURE.md`**: Updated module boundaries and package structure (`payment` and `deposit` packages; 45 MVP domain tables, 8 future-phase tables, transactional outbox pattern, and pessimistic concurrency).
-5. **`docs/ARCHITECTURE_DECISIONS.md`**: Added ADR-018 (Partner-Direct Payment Collection & Manual Verification Architecture), marked ADR-016 as superseded, marked ADR-007 as deferred to future phase, reconciled ADR-001, ADR-002, ADR-012, ADR-015, and ADR-017.
-6. **`docs/FINAL_ENTITY_INVENTORY.md`**: Reconciled table count to 47 physical MySQL tables (45 domain + 2 infra) + 8 future-phase tables. Renamed payment tables, added `partner_payment_profiles`, and added Section 3 for future-phase tables.
-7. **`docs/ENTITY_RELATIONSHIPS.md`**: Updated master Mermaid ERD and 45-table referential integrity matrix to reflect partner-direct payment entities, `vehicle_documents`, and `outbox_events`.
-8. **`docs/STATE_MACHINES.md`**: Redesigned booking hold state machine with `VERIFICATION_PENDING` window, detailed `rental_payment_demands` and `rental_payment_submissions` lifecycles, added partner-direct deposit refund state machine, and documented failure/edge scenarios.
-9. **`docs/FINANCIAL_ARCHITECTURE.md`**: Complete overhaul to Partner-Direct Financial & Record-Keeping Architecture. Documented zero platform cash handling, partner direct collection, deposit direct custody, contributor compensation tracking (Approach A), and future-phase general ledger archive.
-10. **`docs/ROLE_PERMISSION_MATRIX.md`**: Added partner payment profile configuration, payment submission, and verification permissions; updated BOLA/IDOR rules (`@paymentSecurity.canVerifySubmission`).
-11. **`docs/DATABASE_DESIGN.md`**: Updated physical schema specifications for all 47 physical MySQL tables and 8 future-phase tables.
-12. **`docs/API_MODULES.md`**: Overhauled Section 8 to partner payment profile endpoints, payment submission endpoints, partner verification/rejection endpoints, and deposit refund endpoints; moved gateway webhooks and platform ledger to Section 11 (Future Phase).
-13. **`docs/SECURITY.md`**: Updated security baseline for partner payment profiles, private storage for UPI QR images and receipts, anti-fraud duplicate reference constraints, and verification audit trails.
-14. **`docs/PAGES_AND_ROUTES.md`**: Updated frontend routes for payment instruction display, customer UTR submission, and partner verification dashboard (`/partner/payment-verification`).
-15. **`docs/DEVELOPMENT_WORKFLOW.md`**: Validated phase sequence and quality gates.
+1. [README.md](file:///d:/vehicle-rental-platform/README.md): Baseline updated to 48 physical tables (56 cataloged entities); updated core payment architecture and documentation index.
+2. [PROJECT_CONSTITUTION.md](file:///d:/vehicle-rental-platform/docs/PROJECT_CONSTITUTION.md): Updated Sections 3.2, 3.3, 3.5, and 4 with decoupled state machines, booking confirmation invariant, `rental_fee_refunds`, configurable rules, and 48-table baseline.
+3. [BUSINESS_REQUIREMENTS.md](file:///d:/vehicle-rental-platform/docs/BUSINESS_REQUIREMENTS.md): Updated Steps 5, 7, 8 in payment workflow, Section 5.5 (`rental_fee_refunds` lifecycle, configurable cancellation rules), and Section 6.1 responsibility matrix.
+4. [ARCHITECTURE.md](file:///d:/vehicle-rental-platform/docs/ARCHITECTURE.md): Updated Section 3 table counts (Module 7: 8 tables, 46 domain + 2 infra = 48 MVP physical tables), Section 4 domain events, and Section 5 booking confirmation invariant.
+5. [ARCHITECTURE_DECISIONS.md](file:///d:/vehicle-rental-platform/docs/ARCHITECTURE_DECISIONS.md): Updated ADR-012 (48 physical tables baseline), ADR-013 (72h refund dispute window), and ADR-018 (decoupled payment state machines, `rental_fee_refunds`, overpayment handling).
+6. [FINAL_ENTITY_INVENTORY.md](file:///d:/vehicle-rental-platform/docs/FINAL_ENTITY_INVENTORY.md): Reconciled summary table to 48 physical tables (56 cataloged); Module 7 updated to 8 tables including Table 36 `rental_fee_refunds`; Tables 37-48 renumbered.
+7. [ENTITY_RELATIONSHIPS.md](file:///d:/vehicle-rental-platform/docs/ENTITY_RELATIONSHIPS.md): Updated Mermaid ERD with `rental_fee_refunds` relationships, and referential integrity matrix with Table 36 and renumbered Tables 37-46.
+8. [DATABASE_DESIGN.md](file:///d:/vehicle-rental-platform/docs/DATABASE_DESIGN.md): Updated Section 8 Module 7 with Table 36 `rental_fee_refunds` DDL and constraints; renumbered Tables 37-48 across Modules 7, 8, 9.
+9. [STATE_MACHINES.md](file:///d:/vehicle-rental-platform/docs/STATE_MACHINES.md): Decoupled Demand (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`) and Submission (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`) state machines; added `rental_fee_refunds` state machine; updated booking confirmation invariant.
+10. [FINANCIAL_ARCHITECTURE.md](file:///d:/vehicle-rental-platform/docs/FINANCIAL_ARCHITECTURE.md): Updated Module 7 count to 8 tables, added Section 2.4 `rental_fee_refunds`, updated demand/submission separation, accumulation, and configurable policy snapshots.
+11. [ROLE_PERMISSION_MATRIX.md](file:///d:/vehicle-rental-platform/docs/ROLE_PERMISSION_MATRIX.md): Added rental-fee refund permissions to global matrix, partner rights, customer 72h dispute rights, and `@rentalRefundSecurity` evaluator.
+12. [API_MODULES.md](file:///d:/vehicle-rental-platform/docs/API_MODULES.md): Added rental-fee refund endpoints (`POST/GET /api/v1/partner/rental-fee-refunds`, `GET /api/v1/customer/rental-fee-refunds`, acknowledge, dispute, resolve), and top-up submission endpoint.
+13. [SECURITY.md](file:///d:/vehicle-rental-platform/docs/SECURITY.md): Updated scope to 48 physical tables, added `@rentalRefundSecurity` evaluator, duplicate reference constraint checks, partner UTR non-equivalence invariant, and booking confirmation invariant.
+14. [PAGES_AND_ROUTES.md](file:///d:/vehicle-rental-platform/docs/PAGES_AND_ROUTES.md): Added `/customer/refunds`, `/partner/rental-refunds`, and updated `/admin/disputes`.
+15. [DEVELOPMENT_WORKFLOW.md](file:///d:/vehicle-rental-platform/docs/DEVELOPMENT_WORKFLOW.md): Validated phase sequencing and quality gates.
 
 ---
 
-## 10. Remaining Contradictions or Unresolved Architecture Decisions
+## 11. Remaining Contradictions or Unresolved Decisions
 
-A comprehensive cross-document reconciliation was performed across all 15 files.
+A comprehensive audit was performed across all 15 documents:
 - **Contradictions Remaining:** **ZERO.**
-- All references to platform Merchant of Record status, centralized Razorpay checkout for rentals, automated T+2 settlement disbursements, platform clearing double-entry accounts, and customer screenshot auto-verification have been completely eradicated from active MVP specifications and cleanly moved to Future Phase.
-- Every physical table name, entity number, module count, and relationship edge matches identically across `FINAL_ENTITY_INVENTORY.md`, `ENTITY_RELATIONSHIPS.md`, `DATABASE_DESIGN.md`, and `ARCHITECTURE.md`.
+- There are no remaining references to the platform holding customer money, customer screenshot auto-verification, or hardcoded cancellation fee percentages.
+- The distinction between `rental_fee_refunds` and `security_deposit_refunds` is cleanly maintained across all entities, state machines, and API endpoints.
+- Table names, counts, entity numbers, and foreign keys match identically across all documents.
 
 ---
 
-## 11. Legal, Tax, Insurance and Payment-Provider Validation Gates
+## 12. Items Requiring Product Owner Approval
 
-Before production deployment and commercial launch in Vijayawada, the following formal validation gates must be cleared:
+The following business rules and operational parameters require formal Product Owner sign-off before implementation:
 
-1. **Legal Validation Gate:**
-   - Review and execute bilateral rental agreements establishing that the rental partner is the independent rental service provider and direct payee.
-   - Confirm platform terms of service defining the platform strictly as an intermediary technology provider and operational record-keeper.
-2. **Tax Validation Gate:**
-   - Professional tax opinion on Goods and Services Tax (GST) applicability under Section 9(5) of the CGST Act (determining whether passenger transport / rental service without operator classifies the platform as an E-Commerce Operator liable to pay GST, or as a pure technological intermediary where the partner discharges GST).
-3. **Insurance Validation Gate:**
-   - Verify that rental partners maintain valid commercial self-drive rental vehicle insurance policies covering vehicle damage, theft, and third-party liabilities during active customer rental intervals.
-4. **Future Payment Provider Pre-Approval Gate:**
-   - When preparing for Future-Phase marketplace gateway integration, formalize commercial and regulatory onboarding with an RBI-authorized Payment Aggregator (e.g. Razorpay Route or Cashfree) for partner linked-account settlement.
+1. **Cancellation Fee Tier Schedule:** Sign off on the initial configurable cancellation rule tiers (e.g. 100% refund >24h before pickup, 50% refund 12-24h before pickup, 0% refund <12h before pickup).
+2. **Payment Verification Window Duration:** Formal confirmation of the default verification window duration (recommended default: 60 minutes) during which a vehicle hold is preserved in `VERIFICATION_PENDING`.
+3. **Refund Dispute Window Duration:** Confirmation of the 72-hour customer dispute window for both rental-fee and security-deposit refunds.
+4. **Platform Monetization Model:** Final selection of commercial monetization mechanism (e.g., partner monthly subscription fee, per-listing fee, or fixed software billing per completed booking).
 
 ---
 
-## 12. Architecture Freeze Division: Frozen vs. Pending Items
+## 13. Confirmation of Zero Application Code Generation
 
-### 12.1 Frozen Architecture Items (Ready for Implementation):
-- **Core Technology Stack:** React + Vite, Tailwind CSS, Spring Boot 3+, Spring Security 6+, MySQL 8.0+, JWT + BCrypt.
-- **Physical Schema Design:** Exactly 47 physical MySQL tables for MVP (45 application-domain tables + 2 infrastructure tables).
-- **Payment Collection Model:** Partner-Direct Payment Collection (UPI QR, UPI ID, Link, Cash at pickup).
-- **Verification Gate Invariant:** Manual partner verification strictly required; customer uploads never auto-verify.
-- **Deposit Architecture:** Direct partner custody, evidence-based deductions, no auto-approval on timeout, direct partner refund tracking.
-- **Contributor Model:** Approach A direct partner settlement; single lump-sum payable per completed booking; tracked in `contributor_payables`.
-- **Custody Ledger:** 8 canonical handover permutations without unvalidated polymorphic foreign keys.
-- **Hold Concurrency:** Pessimistic locking (`SELECT FOR UPDATE`) on `vehicles` with 15-minute initial hold TTL and 60-minute verification extension.
-- **Modular Monolith & Outbox:** Transactional Outbox Pattern (`outbox_events`) and ShedLock distributed scheduling.
-
-### 12.2 Items Requiring Product Owner Approval / Commercial Closure:
-- **Commercial Monetization Model:** Selection of platform monetization mechanism (e.g. partner monthly software subscription, fixed listing fee, or per-booking software fee billed to partner).
-- **Verification Window Duration:** Final sign-off on operational verification window (recommended default: 60 minutes).
-- **Turnaround Buffer Defaults:** Final sign-off on category defaults (recommended: 60 min cars, 30 min bikes/scooters).
-- **Production Infrastructure Provider:** Selection of cloud provider (AWS / GCP / DigitalOcean) and managed MySQL instance tier.
-
----
-
-## Conclusion
-
-The architecture documentation, database design, ERD, financial flows, and state machines are now **100% reconciled, internally consistent, and implementation-ready**. This complete specification serves as the authoritative baseline for the upcoming implementation phase.
+**Explicit Confirmation:**
+- **Zero application code has been generated.**
+- No Java source files, Spring Boot components, Spring Security configurations, JPA entities, or repository interfaces were created.
+- No React components, JSX/TSX files, CSS stylesheets, or frontend routes were created.
+- No Flyway SQL migration scripts or database DDL files were generated or executed against any database.
+- No unit, integration, or end-to-end tests were generated.
+- All modifications are strictly documentation-only architectural corrections.

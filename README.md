@@ -41,22 +41,22 @@ The MVP adopts a **Partner-Direct Payment Collection** model (ADR-018):
 
 ---
 
-## Authoritative Database Design Freeze Documentation (47 Physical Tables for MVP)
+## Authoritative Database Design Freeze Documentation (48 Physical Tables for MVP)
 
 All documentation reflects the reconciled database design freeze candidate baseline:
 
-1. [Project Constitution](docs/PROJECT_CONSTITUTION.md) — Mandatory development rules, non-negotiable domain invariants, partner-direct payment rules, and configurable operational defaults.
-2. [Business Requirements](docs/BUSINESS_REQUIREMENTS.md) — Workflows, dual inventory channels, 8 custody permutations, 10-step partner-direct payment workflow, and tax disclaimers.
-3. [System Architecture](docs/ARCHITECTURE.md) — Modular monolith design, 45 MVP domain tables + 2 infra tables, outbox pattern, and distributed scheduling.
-4. [Architecture Decision Records](docs/ARCHITECTURE_DECISIONS.md) — Formal ADRs (ADR-001 through ADR-018), including ADR-018 Partner-Direct Payment Collection.
-5. [Final Physical Entity Inventory](docs/FINAL_ENTITY_INVENTORY.md) — Authoritative inventory of **47 proposed physical tables for MVP** (45 application-domain + 2 infrastructure) + **8 Future-Phase tables**.
-6. [Entity Relationships & Master ERD](docs/ENTITY_RELATIONSHIPS.md) — Referential integrity, cardinality, and comprehensive Mermaid ER diagram connecting all 45 MVP domain tables.
-7. [Operational & Financial State Machines](docs/STATE_MACHINES.md) — Decoupled lifecycle state transition specifications for holds, bookings, payment demands, submissions, deposit refunds, agreements, and custody.
-8. [Financial & Operational Record-Keeping Architecture](docs/FINANCIAL_ARCHITECTURE.md) — Zero platform cash handling, partner direct collection, deposit direct custody, contributor compensation tracking (Approach A), and future-phase general ledger roadmap.
-9. [Role-Permission Matrix](docs/ROLE_PERMISSION_MATRIX.md) — Global capabilities, verified partner gates, payment verification authorization, and fine-grained resource-level security (BOLA/IDOR defense).
-10. [API Module Plan](docs/API_MODULES.md) — REST endpoint inventory under `/api/v1` namespace.
-11. [Security Baseline](docs/SECURITY.md) — Authentication, token encryption, payment submission verification security, and dispute arbitration controls.
-12. [Page and Route Inventory](docs/PAGES_AND_ROUTES.md) — Frontend route map across roles, including payment instruction and partner verification screens.
+1. [Project Constitution](docs/PROJECT_CONSTITUTION.md) — Mandatory development rules, non-negotiable domain invariants, partner-direct payment rules, booking confirmation invariants, and configurable operational defaults.
+2. [Business Requirements](docs/BUSINESS_REQUIREMENTS.md) — Workflows, dual inventory channels, 8 custody permutations, 10-step partner-direct payment workflow, rental-fee refund rules, and tax disclaimers.
+3. [System Architecture](docs/ARCHITECTURE.md) — Modular monolith design, 46 MVP domain tables + 2 infra tables (48 MVP physical tables total), outbox pattern, and distributed scheduling.
+4. [Architecture Decision Records](docs/ARCHITECTURE_DECISIONS.md) — Formal ADRs (ADR-001 through ADR-018), including ADR-018 Partner-Direct Payment Collection & Decoupled State Machines.
+5. [Final Physical Entity Inventory](docs/FINAL_ENTITY_INVENTORY.md) — Authoritative inventory of **48 proposed physical tables for MVP** (46 application-domain + 2 infrastructure) + **8 Future-Phase tables** (56 total cataloged entities).
+6. [Entity Relationships & Master ERD](docs/ENTITY_RELATIONSHIPS.md) — Referential integrity, cardinality, and comprehensive Mermaid ER diagram connecting all 46 MVP domain tables.
+7. [Operational & Financial State Machines](docs/STATE_MACHINES.md) — Decoupled lifecycle state transition specifications for holds, bookings, payment demands, submissions, rental-fee refunds, deposit refunds, agreements, and custody.
+8. [Financial & Operational Record-Keeping Architecture](docs/FINANCIAL_ARCHITECTURE.md) — Zero platform cash handling, partner direct collection, rental-fee refund tracking, deposit direct custody, contributor compensation tracking (Approach A), and future-phase general ledger roadmap.
+9. [Role-Permission Matrix](docs/ROLE_PERMISSION_MATRIX.md) — Global capabilities, verified partner gates, payment verification authorization, rental-fee refund permissions, and fine-grained resource-level security (BOLA/IDOR defense).
+10. [API Module Plan](docs/API_MODULES.md) — REST endpoint inventory under `/api/v1` namespace, including decoupled demand/submission and rental-fee refund endpoints.
+11. [Security Baseline](docs/SECURITY.md) — Authentication, token encryption, payment submission verification security, duplicate reference prevention, partner UTR non-equivalence, and dispute arbitration controls.
+12. [Page and Route Inventory](docs/PAGES_AND_ROUTES.md) — Frontend route map across roles, including payment instruction, partner verification, and rental-fee refund screens.
 13. [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md) — Phase discipline, Git workflow, and quality gates.
 14. [Architecture Review Report](docs/architecture_review_report.md) — Pre-freeze validation audit findings, final reconciliation report, and sign-off status.
 

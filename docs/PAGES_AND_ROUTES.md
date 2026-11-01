@@ -39,6 +39,7 @@ Routes below are proposed for the React + Vite frontend application. Final namin
 | `/customer/bookings` | Booking history | Filter by status (`CONFIRMED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`) |
 | `/customer/bookings/:bookingId` | Booking details | Rental contract, vehicle details, partner contact, inspection reports |
 | `/customer/bookings/:bookingId/deposit` | Security deposit tracking | Held balance, proposed deductions, refund status, dispute button |
+| `/customer/refunds` | Rental fee refunds tracking | Track cancellation refunds, overpayment returns, expired-hold returns, acknowledge/dispute (72h) |
 | `/customer/profile` | Profile & emergency contacts | Personal details, phone verification |
 | `/customer/verification` | Identity & driving licence | OKYC Aadhaar / driving licence upload |
 | `/customer/reviews` | My reviews | Submitted vehicle reviews |
@@ -97,6 +98,7 @@ Routes below are proposed for the React + Vite frontend application. Final namin
 | `/partner/bookings/:bookingId` | Booking details & fulfillment | Customer contact, pickup/return checklists, payment records |
 | `/partner/inspections` | Inspection records | Pre-rental handover and post-rental return photo logs |
 | `/partner/deposits` | Security deposit management | Track deposits held, propose damage deductions, record direct refunds with UTR |
+| `/partner/rental-refunds` | Rental-fee refund execution | Track and record direct external refunds for cancellations, overpayments, expired-hold exceptions |
 | `/partner/contributor-payables` | Contributor settlement workflow | Schedule and record direct bank transfers (NEFT/IMPS/UPI) to contributors with UTR and receipt upload |
 | `/partner/financials` | Financial record-keeping | Overview of direct rental proceeds received and contributor settlements recorded |
 
@@ -114,8 +116,8 @@ Routes below are proposed for the React + Vite frontend application. Final namin
 | `/admin/bookings` | Master booking oversight | Global booking audit and operational monitoring |
 | `/admin/payment-submissions` | Payment submissions & audit | Audit trail of customer payment submissions and partner verifications |
 | `/admin/deposits` | Deposit & refund monitoring | Oversee deposit liabilities held by partners and refund compliance |
-| `/admin/disputes` | Dispute arbitration queue | Arbitrate contested damage deductions and deposit refund disputes |
+| `/admin/disputes` | Dispute arbitration queue | Arbitrate contested damage deductions, deposit refund disputes, and rental-fee refund disputes |
 | `/admin/reviews` | Review moderation | Moderate flagged customer reviews |
 | `/admin/reports` | Operational analytics | Fleet utilization, turnaround times, regional metrics |
-| `/admin/settings` | Platform policy configuration | Configure default hold TTL, turnaround buffers, verification windows |
+| `/admin/settings` | Platform policy configuration | Configure default hold TTL, turnaround buffers, verification windows, configurable cancellation rules |
 | `/admin/audit` | Security audit trail | Query immutable `audit_logs` by user, entity, and correlation ID |

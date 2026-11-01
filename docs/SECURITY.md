@@ -3,7 +3,7 @@
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh  
 **Status:** Database Design Freeze Candidate Baseline (Partner-Direct Payment Model)  
-**Schema Scope:** 47 Physical MySQL Tables (45 Application-Domain + 2 Infrastructure-Managed) + 8 Future-Phase Tables  
+**Schema Scope:** 48 Physical MySQL Tables (46 Application-Domain + 2 Infrastructure-Managed) + 8 Future-Phase Tables  
 
 Security is an architectural baseline enforced at the data, transport, and application layers, not a post-launch hardening activity.
 
@@ -33,16 +33,17 @@ Security is an architectural baseline enforced at the data, transport, and appli
   - View their own fixed earnings, payable statuses, settlement UTR references, and dates.
   - Acknowledge or dispute partner direct settlements with UTR evidence.
   - Request vehicle withdrawal with recommended 7-day notice (subject to active bookings).
-- **Partner Boundaries:** A verified partner configures their direct payment profile, manages independently registered fleet, manages accepted contributor fleet, controls listing pricing subject to price floors, conducts inspections, verifies customer payment submissions, manages deposit custody, and records direct contributor settlements under Approach A.
-- **Customer Privacy:** A customer can access **only** their own bookings, payment demands, payment submissions, deposit statuses, and submitted KYC documents.
+- **Partner Boundaries:** A verified partner configures their direct payment profile, manages independently registered fleet, manages accepted contributor fleet, controls listing pricing subject to price floors, conducts inspections, verifies customer payment submissions, manages deposit custody, executes direct rental-fee refunds, and records direct contributor settlements under Approach A.
+- **Customer Privacy:** A customer can access **only** their own bookings, payment demands, payment submissions, deposit statuses, rental-fee refund records (`rental_fee_refunds`), and submitted KYC documents.
 - **Method Security:** Spring Security `@PreAuthorize` method security applied across all service boundaries.
-- **BOLA / IDOR Defense:** Every endpoint containing an entity identifier (e.g. `bookingId`, `vehicleId`, `agreementId`, `submissionId`, `payableId`) validates relational ownership:
+- **BOLA / IDOR Defense:** Every endpoint containing an entity identifier (e.g. `bookingId`, `vehicleId`, `agreementId`, `submissionId`, `payableId`, `refundId`) validates relational ownership:
   - `@bookingSecurity.canAccess(bookingId, principal)`
   - `@paymentSecurity.canVerifySubmission(submissionId, principal)`
   - `@vehicleSecurity.canAccessDocuments(vehicleId, principal)`
   - `@inspectionSecurity.canAccess(inspectionId, principal)`
   - `@agreementSecurity.canAccess(agreementId, principal)`
   - `@payableSecurity.canAccessPayable(payableId, principal)`
+  - `@rentalRefundSecurity.canManageRefund(refundId, principal)`
 
 ---
 
@@ -60,7 +61,11 @@ Security is an architectural baseline enforced at the data, transport, and appli
 ## 4. Partner-Direct Payment, Verification & Anti-Fraud Security
 
 - **Strict Verification Invariant:** A customer-uploaded screenshot, receipt, or UTR must **NEVER** automatically mark a payment as verified or confirm a booking. ONLY an explicit API call by an authenticated user belonging to the managing partner organization can mark the submission `VERIFIED`.
-- **Duplicate Reference Prevention:** Database unique constraint `uk_submissions_partner_ref` on `(manager_partner_id, transaction_reference)` prevents malicious customers from recycling older bank UTRs or receipts across multiple bookings.
+- **Decoupled Payment Accumulation:** Individual verified submissions aggregate into `rental_payment_demands.amount_satisfied`. Top-ups are submitted until the demand is satisfied.
+- **Overpayment Handling:** Any verified excess amount above `amount_demanded` is flagged and an automated refund obligation is created in `rental_fee_refunds` (`refund_reason = 'OVERPAYMENT_RETURN'`).
+- **Duplicate Reference Prevention:** Database unique constraints prevent reference recycling across both inbound submissions (`uk_submissions_partner_ref` on `(manager_partner_id, transaction_reference)`) and refunds (`uk_rental_refunds_partner_utr` on `(manager_partner_id, partner_transaction_reference)`).
+- **Partner UTR Non-Equivalence Invariant:** Partner entry of a refund UTR marks status `DISBURSED_BY_PARTNER`. It does NOT prove customer receipt. Status transitions to `CONFIRMED_BY_CUSTOMER` only upon customer acknowledgement or upon expiry of the 72-hour dispute window.
+- **Booking Confirmation Invariant:** A booking can ONLY be confirmed when: (1) exclusive vehicle lock is held; (2) demands are `SATISFIED` through verified submissions (or partner pay-at-pickup is explicitly approved); (3) required security deposit policy is satisfied; and (4) the booking hold is still valid or safely revalidated under vehicle lock. An expired hold is NEVER silently confirmed. Late payments on expired holds where the vehicle is reallocated must be refunded via `rental_fee_refunds`.
 - **Verification Window & Inventory Protection:** Customer submission transitions the hold to `VERIFICATION_PENDING` and extends the lock TTL by a configurable window (e.g. 60 minutes). If the partner fails to act within the window, the hold expires to prevent indefinite inventory locking.
 - **Refundable Deposit Custody:** Security deposits are tracked as a **refundable customer liability in partner custody**, never as platform revenue, taxable turnover, or escrow.
 - **Damage Claim Dispute Protection:**

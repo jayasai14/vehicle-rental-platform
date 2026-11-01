@@ -2,7 +2,7 @@
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
-**Status:** Database Design Freeze Candidate Baseline (47 Physical Tables: 45 MVP Domain + 2 Infra, 8 Future-Phase)  
+**Status:** Database Design Freeze Candidate Baseline (48 Physical Tables: 46 MVP Domain + 2 Infra, 8 Future-Phase)  
 
 ---
 
@@ -82,14 +82,11 @@ backend/src/main/java/com/vehiclerental/
 ├── user/
 ├── partner/                 # Partner profiles, partner_locations (hubs), delivery_zones
 ├── vehicle/                 # Vehicles, vehicle_custody_events, documents, pricing, buffers
-├── contribution/            # Contributor applications, agreements, withdrawal requests
-├── booking/                 # Bookings, booking_holds, extensions, cancellation
-├── inspection/              # Handover/return inspections, incidents, inspection_media
-├── payment/                 # Partner payment profiles, rental payment demands, customer submissions, verification
-├── deposit/                 # Security deposits, damage deductions, partner direct refunds
 ├── contribution/            # Contributor applications, agreements, withdrawal requests, contributor_payables
 ├── booking/                 # Bookings, booking_holds, extensions, cancellation
 ├── inspection/              # Handover/return inspections, incidents, inspection_media
+├── payment/                 # Partner payment profiles, rental payment demands, customer submissions, rental fee refunds, verification
+├── deposit/                 # Security deposits, damage deductions, security deposit refunds
 ├── review/
 ├── support/
 └── notification/
@@ -97,7 +94,7 @@ backend/src/main/java/com/vehiclerental/
 
 ---
 
-## 3. Core Module Boundaries & Ownership (45 MVP Domain Tables + 2 Infra = 47 Total)
+## 3. Core Module Boundaries & Ownership (46 MVP Domain Tables + 2 Infra = 48 Total)
 
 | Module | Physical Tables Owned | Core Domain Responsibilities |
 |---|---|---|
@@ -107,7 +104,7 @@ backend/src/main/java/com/vehiclerental/
 | **custody** | `vehicle_custody_events` (1) | Generic vehicle custody tracking ledger supporting all 8 canonical physical handover permutations. |
 | **contribution** | `contributor_vehicle_applications`, `contribution_agreements`, `contribution_agreement_events`, `vehicle_withdrawal_requests` (4) | Contributor vehicle submissions, bilateral agreements, fixed payout terms, lifecycle audit events, withdrawal requests. |
 | **booking & inspection** | `booking_holds`, `bookings`, `booking_status_events`, `booking_extensions`, `inspections`, `inspection_media`, `incidents` (7) | 15-minute temporary reservation locks, master booking contracts, extensions, pre/post inspection logs, condition media, damage incidents. |
-| **payment & settlement** | `partner_payment_profiles`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposits`, `deposit_deductions`, `security_deposit_refunds`, `contributor_payables` (7) | Partner payment profiles (UPI QR/ID/Link/Cash), payment demands, customer UTR submissions, manual partner verification, deposit custody, evidence-based deductions, direct partner refunds, contributor payable tracking. |
+| **payment & settlement** | `partner_payment_profiles`, `rental_payment_demands`, `rental_payment_submissions`, `rental_fee_refunds`, `security_deposits`, `deposit_deductions`, `security_deposit_refunds`, `contributor_payables` (8) | Partner payment profiles (UPI QR/ID/Link/Cash), payment demands, customer UTR submissions, manual partner verification, rental fee refunds, deposit custody, evidence-based deductions, direct deposit refunds, contributor payable tracking. |
 | **support & communication** | `reviews`, `support_tickets`, `support_ticket_messages`, `notifications` (4) | Booking-bound customer reviews, support ticketing, in-app/SMS/email notifications. |
 | **common / infrastructure** | `outbox_events`, `audit_logs`, `shedlock`, `flyway_schema_history` (2 domain + 2 infra = 4) | Transactional outbox engine, security audit logs, ShedLock distributed locks, Flyway schema history. |
 
@@ -119,7 +116,7 @@ backend/src/main/java/com/vehiclerental/
 ## 4. Decoupled Inter-Module Communication
 
 1. **Spring Application Events:**
-   - Modules publish strongly-typed domain events (e.g., `BookingConfirmedEvent`, `PaymentSubmittedEvent`, `PaymentVerifiedEvent`, `InspectionCompletedEvent`) via `ApplicationEventPublisher`.
+   - Modules publish strongly-typed domain events (e.g., `BookingConfirmedEvent`, `PaymentSubmittedEvent`, `PaymentVerifiedEvent`, `RentalFeeRefundRecordedEvent`, `InspectionCompletedEvent`) via `ApplicationEventPublisher`.
    - Dependent modules consume events using `@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)` to decouple synchronous dependencies and prevent distributed transaction failure loops.
 2. **Transactional Outbox Pattern:**
    - External network interactions (Cloudinary media processing, email/SMS dispatch, external notifications) must NOT execute directly inside database transaction boundaries.
@@ -137,29 +134,38 @@ backend/src/main/java/com/vehiclerental/
      SELECT id FROM vehicles WHERE id = :vehicleId FOR UPDATE;
      ```
    - Availability validation executes within this locked transaction, verifying zero overlap across confirmed bookings, active unexpired booking holds (`status = 'ACTIVE' AND expires_at > NOW()`), maintenance blocks, and turnaround buffers (`turnaround_buffer_minutes`).
-2. **Hold Isolation & Partner Verification Protocol:**
+2. **Hold Isolation & Decoupled Payment Verification Protocol:**
    - Creating a hold inserts into `booking_holds`; it **does NOT create an incomplete record in `bookings`**.
-   - Submitting payment details inserts into `rental_payment_submissions` (`SUBMITTED_FOR_VERIFICATION`) and preserves the hold lock during the verification window.
-   - Only partner verification converts the hold and creates a `CONFIRMED` booking. Unverified submissions never confirm bookings.
-     - If the vehicle interval remains completely available, the system recovers and confirms the booking.
-     - If the interval has been reserved by another customer in the interim, the platform **automatically triggers a 100% gateway refund**.
+   - A payment demand (`rental_payment_demands`) tracks the required financial amount (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`).
+   - Customer submissions (`rental_payment_submissions`) record external transfer attempts (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`).
+   - Multiple verified submissions accumulate in `rental_payment_demands.amount_satisfied`.
+   - Customer uploads never auto-verify payments; **only verified partner confirmation** transitions submissions to `VERIFIED`.
+   - **Booking Confirmation Invariant:** A booking can be confirmed ONLY when:
+     1. Vehicle calendar availability is valid under the exclusive row lock.
+     2. Applicable payment demands are `SATISFIED` through accumulated verified submissions, OR an explicit partner-approved pay-at-pickup policy permits the required unpaid balance.
+     3. Any required security-deposit policy is satisfied.
+     4. The booking hold is still valid or safely revalidated under the vehicle lock.
+   - If a hold expires while payment is awaiting verification or verified late, the booking is **NEVER silently confirmed**. If the vehicle interval is occupied by another booking, the partner must issue a 100% direct refund via `rental_fee_refunds` (`refund_reason = LATE_PAYMENT_EXPIRED_HOLD`).
+   - For pay-at-pickup bookings, physical handover is strictly blocked until the partner verifies required collections at pickup.
 
 ---
 
-## 6. Financial Architecture & Contributor Settlement
+## 6. Financial Architecture & Contributor Settlement (Partner-Direct Model)
 
-1. **Approach A (Direct Partner Settlement - Recommended MVP Baseline):**
+1. **Partner-Direct Collection & Zero Platform Cash:**
+   - The managing rental partner receives customer rental payments and security deposits directly outside the platform.
+   - The platform never holds, escrows, or transfers customer funds in the MVP.
+2. **Approach A (Direct Partner Contributor Settlement - Baseline):**
    - The rental partner is the sole legal debtor for contributor fixed earnings.
    - The platform calculates the payable, records the obligation against the partner in `contributor_payables`, provides an interface for the partner to record payments with bank UTR numbers, tracks settlement status, allows contributor confirmation or dispute, and provides administrative oversight.
-   - Direct payments by partners to contributors are **never represented as cash movements through the platform general ledger**.
+   - Direct payments by partners to contributors are **never represented as cash movements through any platform general ledger**.
    - The platform never holds or routes third-party contributor funds and assumes zero debtor liability.
-2. **Approach B (Razorpay Route - Future Option PENDING Validation):**
-   - Payment gateway automatically splits incoming rental proceeds directly to contributor bank accounts.
-   - Marked **PENDING** partner linked-account onboarding, KYC workflows, and RBI payment aggregator regulatory review.
-3. **Double-Entry Append-Only General Ledger:**
-   - Master accounts (`ledger_accounts`), journal headers (`ledger_transactions`), and line items (`ledger_entries`) record actual platform cash, customer refundable liabilities, platform commission revenue, and net partner payables.
-   - Every transaction group strictly balances ($\sum \text{Debits} = \sum \text{Credits}$).
-   - Balances are derived projections; corrections use reversal entries.
+3. **Rental-Fee Refund Tracking (`rental_fee_refunds`):**
+   - Direct partner-executed rental fee refunds are audited for cancellations, overpayments, expired-hold exceptions, and disputes.
+   - Cancellation refund amounts are determined dynamically from configurable business rules snapshotted at calculation time.
+   - A partner-entered UTR moves status to `DISBURSED_BY_PARTNER`; customer confirmation or 72h dispute window required.
+4. **Future-Phase Marketplace Gateway & Append-Only General Ledger:**
+   - Automated split settlements (e.g. Razorpay Route), webhook idempotency, platform commission rules, and double-entry general ledger accounts are deferred to a subsequent release following regulatory and compliance approvals.
 
 ---
 
@@ -179,6 +185,7 @@ backend/src/main/java/com/vehiclerental/
 ## 8. Decoupling Operational Completion from Financial Settlement
 
 - A booking reaches operational completion (`COMPLETED`) as soon as the vehicle is returned and the post-rental inspection is signed.
-- Security deposit refund, deduction, or dispute operates independently on `security_deposits` and `deposit_deductions`.
+- Security deposit refund, deduction, or dispute operates independently on `security_deposits`, `deposit_deductions`, and `security_deposit_refunds`.
+- Rental fee refunds operate independently on `rental_fee_refunds`.
 - Contributor payable eligibility, scheduling, and settlement operate independently on `contributor_payables`.
 - Delayed or disputed refunds or payouts never block operational booking completion or vehicle re-listing.

@@ -163,16 +163,16 @@ Connecting operational booking completion with deposit refunds, damage claims, a
 
 ---
 
-## ADR-012: Database Design Freeze Baseline (47 Proposed Physical Tables)
+## ADR-012: Database Design Freeze Baseline (48 Proposed Physical Tables)
 
 ### Context
-Following the transition to Partner-Direct payment collection, platform-clearing, gateway webhook, and platform general ledger tables are moved to Future Phase.
+Following the transition to Partner-Direct payment collection and the explicit modeling of rental-fee refund tracking (`rental_fee_refunds`), the physical schema baseline is finalized before implementation.
 
 ### Decision
-1. **Authoritative Proposed Count:** Freeze the physical database schema at exactly **47 physical tables**:
-   - **45 Application-Domain Tables** across Modules 1 through 8.
+1. **Authoritative Proposed Count:** Freeze the physical database schema at exactly **48 physical tables**:
+   - **46 Application-Domain Tables** across Modules 1 through 8 (including `rental_fee_refunds`).
    - **2 Infrastructure-Managed Tables** (`shedlock`, `flyway_schema_history`).
-   - **8 Future-Phase Tables** cataloged for future marketplace gateway integration (55 total cataloged entities).
+   - **8 Future-Phase Tables** cataloged for future marketplace gateway integration (56 total cataloged entities).
 2. **Pre-Implementation Status:** No database tables or migrations have been created yet.
 
 ---
@@ -192,6 +192,7 @@ Hardcoding operational parameters into application code prevents business tuning
    - Contributor settlement mode: Direct partner payment (Approach A).
    - Vehicle withdrawal notice: Recommended 7 days, subject to confirmed bookings.
    - Deposit dispute response window: 48 hours.
+   - Customer refund acknowledgement window: 72 hours.
    - Overdue return grace period: 30 minutes.
 
 ---
@@ -242,13 +243,13 @@ A decision is required between a single immutable lump-sum settlement model vs. 
 
 ---
 
-## ADR-018: Partner-Direct Payment Collection & Manual Verification Architecture (MVP Baseline)
+## ADR-018: Partner-Direct Payment Collection, Decoupled State Machines & Refund Tracking (MVP Baseline)
 
 ### Context
-Launching a vehicle rental marketplace in Vijayawada requires a legally sound, operationally robust, and low-friction payment architecture. Operating a platform-owned payment gateway with centralized collection, escrow-like deposit holding, and split payouts introduces regulatory complexity (RBI Payment Aggregator regulations, GST Section 9(5) E-Commerce Operator compliance, escrow bank accounts). A simpler, compliant MVP model is required.
+Launching a vehicle rental marketplace in Vijayawada requires a legally sound, operationally robust, and low-friction payment architecture. Operating a platform-owned payment gateway with centralized collection, escrow-like deposit holding, and split payouts introduces regulatory complexity (RBI Payment Aggregator regulations, GST Section 9(5) E-Commerce Operator compliance, escrow bank accounts). Furthermore, payment demand state must not overlap with individual submission state, and rental-fee refunds must have a distinct, auditable lifecycle from deposit refunds.
 
 ### Decision
-The platform adopts **PARTNER-DIRECT PAYMENT COLLECTION** for the MVP:
+The platform adopts **PARTNER-DIRECT PAYMENT COLLECTION WITH DECOUPLED STATE MACHINES AND RENTAL-FEE REFUND TRACKING** for the MVP:
 
 1. **Direct Payee Role:** The rental partner managing the vehicle is the customer-facing rental service provider and direct payee for all bookings on that vehicle.
 2. **Zero Platform Cash Handling:** The platform does NOT collect, hold, escrow, split, or disburse customer rental money or security deposits. No platform-owned payment gateway account is integrated for customer rental checkout.
@@ -257,41 +258,42 @@ The platform adopts **PARTNER-DIRECT PAYMENT COLLECTION** for the MVP:
    - Partner's UPI ID (VPA displayed with copy button).
    - Partner's external payment link (if configured).
    - Cash at pickup (only if explicitly enabled by the partner).
-4. **Customer Payment Submission:** Customer executes payment directly to partner outside the platform, then submits payment details:
-   - Transaction Reference / Bank UTR.
-   - Payment Method used.
-   - Exact Amount transferred.
-   - Transaction Timestamp.
-   - Optional receipt / screenshot image.
-   - Status transitions to `SUBMITTED_FOR_VERIFICATION`.
+4. **Decoupled Payment Demands and Submissions:**
+   - `rental_payment_demands`: Models the total financial obligation (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`).
+   - `rental_payment_submissions`: Models individual customer payments/proof (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`).
+   - Multiple submissions accumulate verified amounts in `rental_payment_demands.amount_satisfied`. Top-up payments are supported.
+   - Overpayments (verified amounts > demanded) transition the demand to `SATISFIED` and trigger an overpayment refund in `rental_fee_refunds`.
 5. **Strict Partner Verification Gate (Invariant):**
    - **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as verified or confirm a booking.**
    - The partner independently verifies their own UPI, bank, or cash records.
-   - ONLY an explicit action by the responsible partner can mark the submission `VERIFIED`.
-   - Booking transitions to `CONFIRMED` only upon partner verification (or under a partner-approved pay-at-pickup policy).
-6. **Temporary Availability Hold & Verification Locking:**
-   - 15-minute hold created on booking request (`ACTIVE`).
-   - Customer submission before TTL expiration transitions hold to `VERIFICATION_PENDING` with a configurable verification window (e.g. 60 minutes), preserving inventory locking.
-   - Expired hold without submission transitions to `EXPIRED`, releasing inventory.
-   - Late or unmatched payments are handled via an explicit partner exception/refund workflow without auto-confirming expired bookings.
-7. **Security Deposit Direct Custody & Refund Flow:**
-   - Partner directly collects and holds the customer security deposit.
-   - Partner directly executes deposit refunds outside the platform.
-   - Platform records expected deposit, collected amount, collection reference, refund amount, refund UTR, evidence, and customer acknowledgement/dispute.
-   - Disputed damage deductions require evidence and never auto-approve on timeout; unresolved disputes trigger Admin review.
-8. **Contributor Compensation (Approach A Preserved):**
+   - ONLY an explicit action by the managing partner marks a submission `VERIFIED`.
+6. **Booking Confirmation Invariant:**
+   A booking can be confirmed ONLY when:
+   - Availability and vehicle assignment are valid under row lock (`SELECT ... FOR UPDATE`).
+   - Demands are `SATISFIED` through verified submissions, OR partner-approved pay-at-pickup policy permits unpaid balance.
+   - Any required security-deposit policy is satisfied.
+   - Hold is still valid or safely revalidated under vehicle lock. An expired hold is **NEVER** silently confirmed.
+   - For pay-at-pickup, vehicle handover is blocked until required collections are verified at pickup.
+7. **Rental-Fee Refund Tracking (`rental_fee_refunds`):**
+   - Independent application table tracking partner-executed rental fee refunds for booking cancellations, overpayments, expired-hold late payments, and dispute resolutions.
+   - Cancellation refund amounts are determined dynamically from configurable business rules snapshotted in `cancellation_policy_snapshot` (never hardcoded).
+   - Partner-entered UTR transitions status to `DISBURSED_BY_PARTNER`. Customer confirmation or 72h dispute window required (`CONFIRMED_BY_CUSTOMER` or `DISPUTED_BY_CUSTOMER`).
+8. **Security Deposit Direct Custody & Refunds (`security_deposits`, `deposit_deductions`, `security_deposit_refunds`):**
+   - Partner directly collects, holds, and refunds security deposits.
+   - Disputed damage claims require evidence and never auto-approve on timeout; require Admin arbitration.
+9. **Contributor Compensation (Approach A Preserved):**
    - Partner owes contributor an agreed fixed fee per completed booking.
-   - Partner pays contributor directly outside the platform.
-   - Platform tracks obligation in `contributor_payables`.
+   - Partner pays contributor directly outside the platform and logs UTR in `contributor_payables`.
 
 ### Alternatives Considered
 1. **Platform as Merchant of Record with Razorpay Route:** Centralized collection, marketplace split settlements, automated payouts. *Rejected for MVP due to regulatory complexity, escrow licensing requirements, and partner linked-account onboarding friction.*
 2. **Automated Screenshot OCR / Webhook Parsing:** Auto-confirming bookings on receipt upload. *Rejected due to extreme fraud vulnerability (tampered images, recycled UTRs).*
-3. **Partner-Direct Collection with Manual Verification Gate:** *Selected for MVP for speed, regulatory simplicity, zero financial liability for the platform, and high partner operational control.*
+3. **Combined Deposit & Rental Refund Table:** Overloading `security_deposit_refunds` to handle rental cancellations. *Rejected to prevent conflating distinct accounting categories, distinct tax obligations, and distinct dispute rules.*
+4. **Partner-Direct Collection with Manual Verification Gate & Separate Refund Tracking:** *Selected for MVP for speed, regulatory simplicity, complete auditability, zero platform cash liability, and clear separation of concerns.*
 
 ### Responsibilities Matrix
-- **Platform Responsibilities:** Operational record-keeping, booking state management, inventory locking, displaying partner payment profiles, capturing customer submission metadata, notifying parties, tracking verification deadlines, recording deposit refunds and contributor payables, providing Admin dispute resolution.
-- **Rental Partner Responsibilities:** Maintaining accurate UPI QR/ID in payment profile, collecting rental charges and deposits directly, verifying transactions against bank/UPI statements, executing deposit refunds, paying contributors directly.
+- **Platform Responsibilities:** Operational record-keeping, booking state management, inventory locking, displaying partner payment profiles, capturing customer submission metadata, notifying parties, tracking verification deadlines, recording rental fee refunds, deposit refunds and contributor payables, providing Admin dispute resolution.
+- **Rental Partner Responsibilities:** Maintaining accurate UPI QR/ID in payment profile, collecting rental charges and deposits directly, verifying transactions against bank/UPI statements, executing rental-fee refunds, executing deposit refunds, paying contributors directly outside the platform.
 
 ### Future Phase Migration Path
 When the business scales and regulatory/commercial validation is completed:

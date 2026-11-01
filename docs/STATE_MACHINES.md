@@ -78,11 +78,11 @@ stateDiagram-v2
 | `[*]` | `CONFIRMED` | `RENTAL_PARTNER` / `SYSTEM` | Payment submission marked `VERIFIED` by partner (or partner pay-at-pickup policy) | Inserts `bookings` record; logs `booking_status_events`; notifies customer and partner. | Records verified rental payment submission. Initializes `security_deposits` record in partner custody. Zero platform cash movement. |
 | `CONFIRMED` | `READY_FOR_PICKUP` | `RENTAL_PARTNER` / `VEHICLE_CONTRIBUTOR` | Vehicle cleaned, staged at hub/address, and pre-rental checklist initiated | Sets `booking_status = READY_FOR_PICKUP`; customer receives pickup readiness notification. | Operational update; checks whether deposit collection is pending before key handover. |
 | `CONFIRMED` | `IN_PROGRESS` | `PARTNER` / `CONTRIBUTOR` + `CUSTOMER` | Direct vehicle handover without staging state; dual inspection completed | **Handover Invariant:** Blocked until required rental amount and security deposit are confirmed collected. Sets `booking_status = IN_PROGRESS`; records `inspections` (PRE_RENTAL); logs `vehicle_custody_events`. | Partner records security deposit collection reference if collected in cash at handover. |
-| `CONFIRMED` | `CANCELLED` | `CUSTOMER` / `PARTNER` / `ADMIN` | Cancellation request prior to vehicle handover | Sets `booking_status = CANCELLED`, sets `cancelled_at` and `cancellation_reason`; frees vehicle calendar immediately. | Enqueues partner refund obligation in `security_deposit_refunds` per cancellation terms; 100% security deposit marked for partner refund. |
-| `CONFIRMED` | `NO_SHOW` | `RENTAL_PARTNER` / `ADMIN` | Customer fails to arrive within 2 hours of scheduled start time | Sets `booking_status = NO_SHOW`; frees vehicle calendar; alerts customer of no-show forfeiture. | Rental subtotal retained by partner per policy; 100% security deposit refunded by partner (no vehicle custody occurred). |
+| `CONFIRMED` | `CANCELLED` | `CUSTOMER` / `PARTNER` / `ADMIN` | Cancellation request prior to vehicle handover | Sets `booking_status = CANCELLED`, sets `cancelled_at` and `cancellation_reason`; frees vehicle calendar immediately. | Generates partner rental refund obligation in `rental_fee_refunds` per configurable cancellation policy snapshot; 100% security deposit marked for partner refund in `security_deposit_refunds`. |
+| `CONFIRMED` | `NO_SHOW` | `RENTAL_PARTNER` / `ADMIN` | Customer fails to arrive within 2 hours of scheduled start time | Sets `booking_status = NO_SHOW`; frees vehicle calendar; alerts customer of no-show forfeiture. | Rental subtotal retained by partner per cancellation policy; 100% security deposit refunded by partner via `security_deposit_refunds`. |
 | `READY_FOR_PICKUP` | `IN_PROGRESS` | `PARTNER` / `CONTRIBUTOR` + `CUSTOMER` | Pickup inspection signed and digital OTP verified | **Handover Invariant:** Vehicle handover blocked until required payment and deposit verified. Sets `booking_status = IN_PROGRESS`; logs custody handover. | Deposit confirmed in partner custody. |
-| `READY_FOR_PICKUP` | `CANCELLED` | `PARTNER` / `ADMIN` | Vehicle breakdown, inspection failure, or customer emergency prior to key handover | Sets `booking_status = CANCELLED`; logs incident; frees vehicle calendar. | Full 100% rental + deposit refund obligation assigned to partner in `security_deposit_refunds`. |
-| `READY_FOR_PICKUP` | `NO_SHOW` | `RENTAL_PARTNER` / `ADMIN` | Customer fails to claim vehicle within 2 hours of start | Sets `booking_status = NO_SHOW`; frees vehicle calendar. | Rental amount retained per policy; security deposit refunded by partner. |
+| `READY_FOR_PICKUP` | `CANCELLED` | `PARTNER` / `ADMIN` | Vehicle breakdown, inspection failure, or customer emergency prior to key handover | Sets `booking_status = CANCELLED`; logs incident; frees vehicle calendar. | Full 100% rental refund assigned to partner in `rental_fee_refunds`; 100% deposit refund assigned in `security_deposit_refunds`. |
+| `READY_FOR_PICKUP` | `NO_SHOW` | `RENTAL_PARTNER` / `ADMIN` | Customer fails to claim vehicle within 2 hours of start | Sets `booking_status = NO_SHOW`; frees vehicle calendar. | Rental amount retained per policy; 100% security deposit refunded by partner via `security_deposit_refunds`. |
 | `IN_PROGRESS` | `OVERDUE` | `SYSTEM` (Scheduled) | Current time exceeds `ends_at` + 30-min buffer without extension | Sets `booking_status = OVERDUE`; alerts fleet manager, customer, and support; initiates penalty tracking. | Accrues hourly late fee penalty to be claimed by partner against security deposit. |
 | `IN_PROGRESS` | `RETURNED` | `PARTNER` / `CONTRIBUTOR` + `CUSTOMER` | Vehicle returned on time/early; physical return inspection executed | Sets `booking_status = RETURNED`; records `inspections` (POST_RENTAL); logs `vehicle_custody_events` (handover back to partner/owner). | Initiates deposit return evaluation in `security_deposits`. |
 | `OVERDUE` | `RETURNED` | `PARTNER` / `CONTRIBUTOR` + `CUSTOMER` | Overdue vehicle returned; physical return inspection executed | Sets `booking_status = RETURNED`; logs `vehicle_custody_events`; attaches late penalty calculation. | Partner logs deposit deduction proposal for overdue charges. |
@@ -95,71 +95,140 @@ stateDiagram-v2
 
 ---
 
-## 3. Rental Payment Demand, Submission & Verification Lifecycles
+## 3. Rental Payment Demand & Submission State Machines (Decoupled Lifecycles)
 
-In the Partner-Direct model, customer payments flow directly to the managing partner's UPI QR, UPI ID, payment link, or cash at pickup. The platform manages the demand, records customer submission proof, and enforces manual partner verification.
+In the Partner-Direct model, customer payments flow directly to the managing partner's external UPI QR, UPI ID, payment link, or cash at pickup. The platform decouples the financial demand (what the customer owes) from individual payment submissions (customer transfer attempts and proof).
 
 ### 3.1 Rental Payment Demand Lifecycle (`rental_payment_demands`)
 
+The payment demand represents the total financial amount owed by the customer for an active reservation hold, extension, or damage invoice.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> ISSUED: Generated for Booking Hold, Extension, or Damage Invoice
-    ISSUED --> PAYMENT_SUBMITTED: Customer submits transaction reference & proof
-    ISSUED --> EXPIRED: Hold expires without submission
-    ISSUED --> CANCELLED: Customer cancels checkout or hold released
+    [*] --> OPEN: Generated for Booking Hold, Extension, or Damage Claim
     
-    PAYMENT_SUBMITTED --> VERIFIED: Partner confirms receipt in bank/UPI
-    PAYMENT_SUBMITTED --> ISSUED: Partner rejects submission (Customer may re-submit if hold valid)
-    PAYMENT_SUBMITTED --> EXPIRED: Verification window expires without partner action
+    OPEN --> PARTIALLY_SATISFIED: Partner verifies partial payment (amount_satisfied < amount_demanded)
+    OPEN --> SATISFIED: Partner verifies full payment (amount_satisfied >= amount_demanded)
+    OPEN --> EXPIRED: Hold expires with zero verified payments
+    OPEN --> CANCELLED: Hold cancelled or checkout abandoned
     
-    VERIFIED --> [*]
+    PARTIALLY_SATISFIED --> SATISFIED: Customer top-up verified (cumulative verified >= demanded)
+    PARTIALLY_SATISFIED --> EXPIRED: Hold expires while partially satisfied (triggers rental_fee_refunds)
+    PARTIALLY_SATISFIED --> CANCELLED: Booking cancelled while partially satisfied (triggers rental_fee_refunds)
+    
+    SATISFIED --> [*]: Booking Confirmed / Obligation Fully Met
     EXPIRED --> [*]
     CANCELLED --> [*]
 ```
 
 ### 3.2 Customer Payment Submission Lifecycle (`rental_payment_submissions`)
 
+The payment submission represents an individual external transfer or cash transaction submitted by the customer against an open demand.
+
 ```mermaid
 stateDiagram-v2
-    [*] --> SUBMITTED_FOR_VERIFICATION: Customer inputs UTR, Amount, Time & Receipt
+    [*] --> SUBMITTED_FOR_VERIFICATION: Customer transfers money & inputs UTR + receipt proof
     
     SUBMITTED_FOR_VERIFICATION --> VERIFIED: Partner independently verifies bank/UPI credit
     SUBMITTED_FOR_VERIFICATION --> REJECTED: Partner finds no credit / invalid UTR / wrong amount
     
-    VERIFIED --> [*]: Triggers Booking CONFIRMED
-    REJECTED --> [*]: Reason logged; customer alerted
+    VERIFIED --> [*]: Verified amount accumulates into demand.amount_satisfied
+    REJECTED --> [*]: Rejection logged; customer alerted; may submit top-up or correction
 ```
 
-### 3.3 State Transition Specifications & Validation Rules:
+### 3.3 State Transition Specifications & Accumulation Rules
 
-| From Status | To Status | Allowed Actor | Trigger / Condition | Concurrency & Validation Rules | Side Effects |
-|---|---|---|---|---|---|
-| `[*]` | `SUBMITTED_FOR_VERIFICATION` | `CUSTOMER` | Customer transfers money to partner and submits UTR/reference | 1. Verifies parent demand is in `ISSUED` or `PAYMENT_SUBMITTED`.<br>2. Verifies hold has not reached `EXPIRED`.<br>3. Enforces unique check on `(manager_partner_id, transaction_reference)` to prevent reference reuse.<br>4. Stores timestamp, amount, payment method, and optional receipt object key. | Hold transitions to `VERIFICATION_PENDING`; TTL extended by verification window (e.g. 60m). Partner notified via in-app/SMS alert. |
-| `SUBMITTED_FOR_VERIFICATION` | `VERIFIED` | `RENTAL_PARTNER` | Partner checks UPI app/bank statement and verifies receipt of exact amount | 1. **Strict Partner Auth:** ONLY users belonging to the managing `partner_profile` can execute verification.<br>2. **Anti-Auto-Verification Invariant:** Customer screenshot/UTR NEVER auto-verifies; only explicit partner API call transitions status.<br>3. Verifies hold/demand has not expired. | Transitions `rental_payment_demands.status = VERIFIED`. Triggers `BookingConfirmedEvent`. Creates master `bookings` row. |
-| `SUBMITTED_FOR_VERIFICATION` | `REJECTED` | `RENTAL_PARTNER` | Partner inspects bank statement and finds no credit or wrong amount | 1. Partner supplies mandatory `rejection_reason` (e.g., `UTR_NOT_FOUND`, `AMOUNT_MISMATCH`, `PAYMENT_DECLINED`).<br>2. Verifies actor belongs to managing partner organization. | Logs rejection with timestamp and partner user ID. Notifies customer with rejection details. If hold TTL remains, customer can re-submit valid UTR; otherwise hold transitions to `EXPIRED`. |
+| Entity | From Status | To Status | Allowed Actor | Trigger / Condition | Concurrency & Validation Rules | Side Effects |
+|---|---|---|---|---|---|---|
+| `rental_payment_demands` | `[*]` | `OPEN` | `SYSTEM` | Hold created, extension requested, or damage invoice issued | Created under vehicle row lock with `amount_demanded` and `amount_satisfied = 0.00`. | Associates with `booking_holds` or `bookings`. |
+| `rental_payment_submissions` | `[*]` | `SUBMITTED_FOR_VERIFICATION` | `CUSTOMER` | Customer transfers money to partner and submits UTR | 1. Verifies parent demand is in `OPEN` or `PARTIALLY_SATISFIED`.<br>2. Verifies hold has not reached `EXPIRED`.<br>3. Enforces unique constraint on `(manager_partner_id, transaction_reference)` to prevent UTR reuse.<br>4. Stores timestamp, amount, payment method, and optional receipt object key. | Transitions hold to `VERIFICATION_PENDING`; extends lock by verification window (e.g. 60m). Dispatches alert to managing partner. |
+| `rental_payment_submissions` | `SUBMITTED_FOR_VERIFICATION` | `VERIFIED` | `RENTAL_PARTNER` | Partner inspects bank/UPI statement and verifies credit of funds | 1. **Strict Partner Auth:** ONLY authenticated users of managing partner organization can verify.<br>2. **Anti-Auto-Verification Invariant:** Customer upload NEVER auto-verifies; only explicit partner API action marks `VERIFIED`. | 1. Sets `submissions.status = VERIFIED`.<br>2. Accumulates `demands.amount_satisfied += submission.amount_submitted`.<br>3. Evaluates demand satisfaction rules (see below). |
+| `rental_payment_submissions` | `SUBMITTED_FOR_VERIFICATION` | `REJECTED` | `RENTAL_PARTNER` | Partner finds no incoming credit, invalid UTR, or payment declined | Partner supplies mandatory `rejection_reason` (`UTR_NOT_FOUND`, `AMOUNT_MISMATCH`, `PAYMENT_DECLINED`). | Sets `submissions.status = REJECTED`. Demand remains in `OPEN` or `PARTIALLY_SATISFIED`. Customer alerted to submit corrected UTR if hold window remains. |
+| `rental_payment_demands` | `OPEN` or `PARTIALLY_SATISFIED` | `PARTIALLY_SATISFIED` | `SYSTEM` (Internal) | Submission verified, but `amount_satisfied < amount_demanded` | Atomic increment on `amount_satisfied`. | Sets `demands.status = PARTIALLY_SATISFIED`. Customer receives notification indicating outstanding balance and is prompted to submit a top-up payment. |
+| `rental_payment_demands` | `OPEN` or `PARTIALLY_SATISFIED` | `SATISFIED` | `SYSTEM` (Internal) | Submission verified and `amount_satisfied >= amount_demanded` | Atomic increment on `amount_satisfied`. | 1. Sets `demands.status = SATISFIED`.<br>2. If `amount_satisfied > amount_demanded` (overpayment), automatically generates an overpayment refund obligation in `rental_fee_refunds` for the excess amount.<br>3. Triggers **Booking Confirmation Invariant** evaluation. |
+| `rental_payment_demands` | `OPEN` or `PARTIALLY_SATISFIED` | `EXPIRED` | `SYSTEM` (Scheduler) | Hold expires without full demand satisfaction | Checked by ShedLock scheduled task. | If `amount_satisfied > 0`, automatically enqueues partner refund obligation in `rental_fee_refunds` (`refund_reason = LATE_PAYMENT_EXPIRED_HOLD`). |
 
-### 3.4 Edge Cases & Failure Scenarios:
+### 3.4 Multi-Submission, Partial Payments, Top-Ups & Edge Scenarios
 
-1. **Duplicate Transaction Reference:**
-   - Database constraint `uk_submissions_partner_ref` (`manager_partner_id`, `transaction_reference`) rejects any attempt to submit an already-used UTR for the same partner.
-   - Prevents malicious customers from recycling older payment receipts across multiple bookings.
-2. **Payment Amount Mismatch:**
-   - If customer transfers ₹1,000 but demand is ₹1,500, the partner rejects with reason `AMOUNT_MISMATCH`.
-   - The platform allows the customer to submit a supplemental transaction reference for the balance, or the partner cancels the demand and returns the partial transfer outside the platform.
-3. **Expired Hold & Late Payment:**
-   - If customer pays partner UPI after the 15-minute hold expires, and the vehicle is subsequently booked by another customer:
-     - The booking is **NOT automatically created or recovered** if the calendar is occupied.
-     - The system flags a `LATE_PAYMENT_EXCEPTION`.
-     - The partner is notified to execute an external refund of the customer's transfer outside the platform, or coordinate an alternative vehicle assignment.
-4. **Partner Non-Response During Verification Window:**
-   - Configurable verification window (e.g. 60 minutes) prevents indefinite vehicle calendar locking.
-   - Automated alerts dispatched to partner at 30 minutes and 45 minutes.
-   - At 60 minutes without partner verification, the hold transitions to `EXPIRED` and inventory is released.
-   - If the customer genuinely paid, customer can submit a support ticket (`PAYMENT` category), and Admin facilitates partner verification or external refund.
+1. **Partial Payments & Top-Ups Workflow:**
+   - A demand is issued for ₹1,500 (`amount_demanded = 1500.00`, `amount_satisfied = 0.00`, `status = OPEN`).
+   - Customer submits a first payment of ₹1,000 (`rental_payment_submissions` #1 created in `SUBMITTED_FOR_VERIFICATION`).
+   - Partner verifies ₹1,000 in UPI/bank statement (`submission #1 = VERIFIED`).
+   - Demand accumulates: `amount_satisfied = 1000.00`. Since ₹1,000 < ₹1,500, demand transitions to `PARTIALLY_SATISFIED`.
+   - Customer receives an in-app alert that ₹500 remains outstanding.
+   - Customer submits a second payment of ₹500 (`submission #2 = SUBMITTED_FOR_VERIFICATION`).
+   - Partner verifies the second payment (`submission #2 = VERIFIED`).
+   - Demand accumulates: `amount_satisfied = 1500.00`. Demand transitions to `SATISFIED`.
+   - The booking confirmation invariant is satisfied; the hold converts to a `CONFIRMED` master booking.
+2. **Handling Rejected Submissions:**
+   - If the partner rejects submission #1 because the UTR was invalid, the submission moves to `REJECTED`.
+   - `amount_satisfied` remains ₹0.00.
+   - The demand remains `OPEN`. The customer may re-submit a valid UTR before the hold TTL expires.
+3. **Overpayment Recording and Automated Refund Tracking:**
+   - If a customer owes ₹1,500 but accidentally transfers ₹2,000, and the partner verifies the ₹2,000 credit:
+   - The demand becomes `SATISFIED` (`amount_satisfied = 2000.00`).
+   - The platform automatically inserts a `rental_fee_refunds` record:
+     * `gross_amount_paid = 2000.00`
+     * `amount_demanded = 1500.00`
+     * `refund_amount = 500.00`
+     * `refund_reason = OVERPAYMENT_RETURN`
+     * `refund_status = PENDING_PARTNER_DISBURSEMENT`
+   - The partner is obligated to return the excess ₹500 directly outside the platform and record the refund UTR.
+4. **Duplicate UTR Prevention:**
+   - Database constraint `uk_submissions_partner_ref` on `(manager_partner_id, transaction_reference)` prevents the same UTR from being submitted to the same partner twice across all bookings.
+5. **Cash-at-Pickup Evidencing & Verification:**
+   - If pay-at-pickup is authorized by the partner, the demand remains `OPEN` until pickup.
+   - At vehicle handover, the customer pays cash. The partner enters the physical cash receipt voucher number and cash collection timestamp via `POST /api/v1/partner/payment-submissions`.
+   - The partner immediately marks the submission `VERIFIED`. Handover inspection cannot complete until verification is logged.
+6. **Booking Confirmation Invariant:**
+   A booking can be confirmed ONLY when:
+   - Vehicle calendar availability is valid under exclusive row lock (`SELECT ... FOR UPDATE`).
+   - Applicable payment demands are `SATISFIED` through verified submissions, OR an explicit partner-approved pay-at-pickup policy permits the required unpaid balance.
+   - Any required security-deposit policy is satisfied.
+   - The hold is still valid or safely revalidated under the vehicle lock.
+   - **An expired hold is NEVER silently converted to a confirmed booking.**
+7. **Hold Expiry while Payment is Awaiting Verification / Late Payments:**
+   - If the 60-minute verification window elapses while a submission is in `SUBMITTED_FOR_VERIFICATION`, the hold status transitions to `EXPIRED` to prevent indefinite calendar locking.
+   - If the partner subsequently verifies the payment, the system acquires the vehicle row lock and checks calendar availability.
+   - If the vehicle interval has been booked by another customer in the interim, the booking **cannot be confirmed**.
+   - The platform creates an exception record in `rental_fee_refunds` referencing `hold_id` and `demand_id` with `booking_id = NULL` and `refund_reason = LATE_PAYMENT_EXPIRED_HOLD`.
+   - The partner is legally and operationally bound to return 100% of the funds directly to the customer outside the platform.
 
 ---
 
-## 4. Security Deposit Custody & Refund State Machine (`security_deposits`)
+## 4. Rental-Fee Refund State Machine (`rental_fee_refunds`)
+
+Tracks direct rental-fee refunds executed by the rental partner outside the platform. Used for booking cancellations, overpayments, late-payment hold exceptions, service deficiencies, and dispute resolutions.
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING_PARTNER_DISBURSEMENT: Obligation generated (Cancellation / Overpayment / Expired Hold / Dispute)
+    
+    PENDING_PARTNER_DISBURSEMENT --> DISBURSED_BY_PARTNER: Partner executes external transfer (UPI/NEFT/IMPS) & enters UTR + receipt
+    
+    DISBURSED_BY_PARTNER --> CONFIRMED_BY_CUSTOMER: Customer confirms receipt in account OR 72h window elapses
+    DISBURSED_BY_PARTNER --> DISPUTED_BY_CUSTOMER: Customer disputes within 72h (funds not received / short amount)
+    
+    DISPUTED_BY_CUSTOMER --> ADMIN_OVERRIDE: Admin arbitrates dispute using bank statements
+    ADMIN_OVERRIDE --> CONFIRMED_BY_CUSTOMER: Admin confirms valid payment
+    ADMIN_OVERRIDE --> PENDING_PARTNER_DISBURSEMENT: Admin rejects invalid UTR; partner instructed to re-issue
+    
+    CONFIRMED_BY_CUSTOMER --> [*]
+```
+
+### 4.1 Refund Transition Specifications:
+
+| From Status | To Status | Allowed Actor | Trigger / Condition | Concurrency & Validation Rules | State Actions & Side Effects |
+|---|---|---|---|---|---|
+| `[*]` | `PENDING_PARTNER_DISBURSEMENT` | `SYSTEM` | Booking cancellation, overpayment verification, expired-hold payment verification, or Admin dispute decision | Calculates refundable rental fee from configurable business rules snapshot in `cancellation_policy_snapshot`. Explicit FKs to `partner_profiles`, `users`, and nullable `bookings`/`booking_holds`/`demands`. | Inserts `rental_fee_refunds` record; notifies managing partner of pending refund obligation with calculated amount. |
+| `PENDING_PARTNER_DISBURSEMENT` | `DISBURSED_BY_PARTNER` | `RENTAL_PARTNER` | Partner executes external bank/UPI transfer to customer and submits UTR + receipt proof | 1. Mandatory `partner_transaction_reference` (UTR).<br>2. Mandatory `refund_method`.<br>3. Unique check on `(manager_partner_id, partner_transaction_reference)`.<br>4. **Non-Equivalence Invariant:** Partner UTR does NOT mean customer received funds. | Sets `refund_status = DISBURSED_BY_PARTNER`, `disbursed_at = NOW()`. Starts 72-hour customer confirmation/dispute window. Customer notified. |
+| `DISBURSED_BY_PARTNER` | `CONFIRMED_BY_CUSTOMER` | `CUSTOMER` / `SYSTEM` | Customer clicks "Confirm Receipt" in UI, OR 72-hour window expires without dispute | Verifies 72 hours have elapsed or customer identity matches `customer_user_id`. | Sets `refund_status = CONFIRMED_BY_CUSTOMER`, `acknowledged_at = NOW()`. Obligation permanently closed. |
+| `DISBURSED_BY_PARTNER` | `DISPUTED_BY_CUSTOMER` | `CUSTOMER` | Customer reports funds not credited or wrong amount within 72h | Requires customer to provide dispute reason and optional account statement. | Sets `refund_status = DISPUTED_BY_CUSTOMER`, `dispute_opened_at = NOW()`. Escalates to Admin dispute queue. |
+| `DISPUTED_BY_CUSTOMER` | `ADMIN_OVERRIDE` | `ADMIN` | Admin reviews banking evidence from both partner and customer | Admin decision: If valid transfer proven $\rightarrow$ mark `CONFIRMED_BY_CUSTOMER`. If invalid/fake UTR $\rightarrow$ revert to `PENDING_PARTNER_DISBURSEMENT` with compliance warning. | Updates status and audit log; notifies customer and partner of formal arbitration outcome. |
+
+---
+
+## 5. Security Deposit Custody & Refund State Machine (`security_deposits`)
 
 Security deposits are collected directly by the managing partner, held in partner custody, and refunded directly by the partner. **A disputed damage claim is NEVER automatically approved merely because a 48-hour response window expires.**
 
