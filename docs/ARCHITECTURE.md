@@ -138,14 +138,20 @@ backend/src/main/java/com/vehiclerental/
    - Creating a hold inserts into `booking_holds`; it **does NOT create an incomplete record in `bookings`**.
    - A payment demand (`rental_payment_demands`) tracks the required financial amount (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`).
    - Customer submissions (`rental_payment_submissions`) record external transfer attempts (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`).
-   - Multiple verified submissions accumulate in `rental_payment_demands.amount_satisfied`.
+   - Multiple verified submissions accumulate in `rental_payment_demands.total_verified_submitted` and apply to `amount_satisfied` (strictly capped at `amount_demanded`).
+   - **Overpayment Accounting:** If verified submissions total ₹1,800 against a ₹1,500 demand, `total_verified_submitted = 1800.00`, `amount_satisfied = 1500.00`, and `excess_amount = 300.00`. The system never stores ₹1,800 as satisfying a ₹1,500 demand.
+   - **Aggregate Refund Limit Validation:** Enforced transactionally under `SELECT ... FOR UPDATE` on the parent demand. Active refunds cannot exceed the gross refundable balance.
    - Customer uploads never auto-verify payments; **only verified partner confirmation** transitions submissions to `VERIFIED`.
    - **Booking Confirmation Invariant:** A booking can be confirmed ONLY when:
      1. Vehicle calendar availability is valid under the exclusive row lock.
      2. Applicable payment demands are `SATISFIED` through accumulated verified submissions, OR an explicit partner-approved pay-at-pickup policy permits the required unpaid balance.
      3. Any required security-deposit policy is satisfied.
      4. The booking hold is still valid or safely revalidated under the vehicle lock.
-   - If a hold expires while payment is awaiting verification or verified late, the booking is **NEVER silently confirmed**. If the vehicle interval is occupied by another booking, the partner must issue a 100% direct refund via `rental_fee_refunds` (`refund_reason = LATE_PAYMENT_EXPIRED_HOLD`).
+   - **Late Payment Recovery After Hold Expiry:**
+     - The original hold and demand remain permanently immutable in `EXPIRED`.
+     - When payment arrives after expiry and is confirmed by the partner, the submission is recorded as `VERIFIED`. The expired demand is **never reopened**.
+     - If the vehicle is available under `SELECT FOR UPDATE`, a fresh hold (`recovered_from_hold_id`) and fresh demand are generated, applying the verified payment, and the booking is confirmed.
+     - If unavailable or recovery cannot be completed, a `rental_fee_refunds` obligation (`EXPIRED_HOLD_EXCEPTION`) is created for partner external return.
    - For pay-at-pickup bookings, physical handover is strictly blocked until the partner verifies required collections at pickup.
 
 ---
@@ -163,7 +169,7 @@ backend/src/main/java/com/vehiclerental/
 3. **Rental-Fee Refund Tracking (`rental_fee_refunds`):**
    - Direct partner-executed rental fee refunds are audited for cancellations, overpayments, expired-hold exceptions, and disputes.
    - Cancellation refund amounts are determined dynamically from configurable business rules snapshotted at calculation time.
-   - A partner-entered UTR moves status to `DISBURSED_BY_PARTNER`; customer confirmation or 72h dispute window required.
+   - **Refund Acknowledgement Semantics:** Separate states enforce that an explicit customer action is the ONLY event establishing customer-confirmed receipt (`CUSTOMER_ACKNOWLEDGED`). Expiry of the 72-hour dispute window transitions to `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`, never customer acknowledgement. Disputed refunds escalate to Admin arbitration via `support_tickets` (`dispute_ticket_id`) and record deciding Admin (`resolved_by_admin_user_id`), transitioning to `ADMIN_RESOLVED`. Applies identically to `security_deposit_refunds`.
 4. **Future-Phase Marketplace Gateway & Append-Only General Ledger:**
    - Automated split settlements (e.g. Razorpay Route), webhook idempotency, platform commission rules, and double-entry general ledger accounts are deferred to a subsequent release following regulatory and compliance approvals.
 

@@ -39,7 +39,7 @@ Routes below are proposed for the React + Vite frontend application. Final namin
 | `/customer/bookings` | Booking history | Filter by status (`CONFIRMED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`) |
 | `/customer/bookings/:bookingId` | Booking details | Rental contract, vehicle details, partner contact, inspection reports |
 | `/customer/bookings/:bookingId/deposit` | Security deposit tracking | Held balance, proposed deductions, refund status, dispute button |
-| `/customer/refunds` | Rental fee refunds tracking | Track cancellation refunds, overpayment returns, expired-hold returns, acknowledge/dispute (72h) |
+| `/customer/refunds` | Rental fee refunds tracking | Track cancellation refunds, overpayment returns, expired-hold returns; explicit UI acknowledgement (`CUSTOMER_ACKNOWLEDGED`) or dispute within 72h |
 | `/customer/profile` | Profile & emergency contacts | Personal details, phone verification |
 | `/customer/verification` | Identity & driving licence | OKYC Aadhaar / driving licence upload |
 | `/customer/reviews` | My reviews | Submitted vehicle reviews |

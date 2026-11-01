@@ -48,13 +48,16 @@ Roles are **additive**. A single user account can hold `CUSTOMER` and `VEHICLE_C
 | | Participate in Post-Rental Return Inspection | ✅ (Customer return) | ✅ (Agreement requirement) | ❌ | ✅ (Partner-managed) | ✅ |
 | | Log Vehicle Custody Transfer Event | ❌ | ✅ (Direct handover/return) | ❌ | ✅ (Hub/Relocation) | ✅ |
 | **Rental Fee Refunds** | Record Direct Rental Fee Refund (Cancellation/Overpayment) | ❌ | ❌ | ❌ | ✅ (Managed fleet) | ✅ |
-| | Acknowledge / Dispute Rental Fee Refund (72h Window) | ✅ (Own booking/hold) | ❌ | ❌ | ❌ | ❌ |
-| | Arbitrate Rental Fee Refund Dispute | ❌ | ❌ | ❌ | ❌ | ✅ (Audited) |
+| | Explicitly Acknowledge Receipt (`CUSTOMER_ACKNOWLEDGED`) | ✅ (Own booking/hold) | ❌ | ❌ | ❌ | ❌ |
+| | Dispute Rental Fee Refund (72h Window) | ✅ (Own booking/hold) | ❌ | ❌ | ❌ | ❌ |
+| | Arbitrate Dispute (`ADMIN_RESOLVED` with Case & Admin FK) | ❌ | ❌ | ❌ | ❌ | ✅ (Audited) |
 | **Deposit & Refunds** | Log Damage Claim / Fuel Deficit | ❌ | ❌ | ❌ | ✅ (Managed fleet) | ✅ |
 | | Dispute Deposit Deduction (48h Window) | ✅ (Own booking) | ❌ | ❌ | ❌ | ❌ |
-| | Review / Arbitrate Deposit Dispute | ❌ | ❌ | ❌ | ❌ | ✅ (Audited) |
+| | Review / Arbitrate Deposit Dispute (Case & Admin FK) | ❌ | ❌ | ❌ | ❌ | ✅ (Audited) |
 | | Record Direct Deposit Refund (UTR & Proof) | ❌ | ❌ | ❌ | ✅ (Managed fleet) | ✅ |
-| | Acknowledge / Dispute Deposit Refund | ✅ (Own booking) | ❌ | ❌ | ❌ | ❌ |
+| | Explicitly Acknowledge Deposit Refund (`CUSTOMER_ACKNOWLEDGED`) | ✅ (Own booking) | ❌ | ❌ | ❌ | ❌ |
+| | Dispute Deposit Refund (72h Window) | ✅ (Own booking) | ❌ | ❌ | ❌ | ❌ |
+| | Arbitrate Deposit Refund Dispute | ❌ | ❌ | ❌ | ❌ | ✅ (Audited) |
 | **Contributor Compensation**| View Own Earnings & Payables | ❌ | ✅ (Own vehicles) | ❌ | ✅ (Managed fleet) | ✅ |
 | | Record Direct Contributor Settlement (App A)| ❌ | ❌ | ❌ | ✅ (Responsible partner) | ✅ |
 | | Acknowledge / Dispute Settlement (App A) | ❌ | ✅ (Own payable) | ❌ | ❌ | ✅ |
@@ -87,7 +90,8 @@ A verified vehicle contributor has the explicit capability to:
 
 ### 2.3 Customer Boundary & Privacy Rights
 - A customer must **only** access their own bookings, payment demands, payment submissions, security deposit records, rental-fee refund records (`rental_fee_refunds`), refund statuses, and submitted verification documents.
-- Customers have a 72-hour window following partner disbursement of a rental-fee refund to acknowledge receipt or raise a dispute.
+- Customers have a 72-hour window following partner disbursement of a rental-fee refund or security deposit refund to explicitly acknowledge receipt (`CUSTOMER_ACKNOWLEDGED`) or raise a dispute (`DISPUTED_BY_CUSTOMER`).
+- An explicit customer UI action is the **only** event that establishes customer acknowledgement; expiry of the 72-hour window transitions status to `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED` and is never treated as customer confirmation.
 - Customers must never see contributor fixed fees, partner internal financials, or private unmasked RC/PAN data of vehicle owners.
 
 ### 2.4 Administrative Access Controls
@@ -137,6 +141,6 @@ Every secure API endpoint enforces resource-level evaluators via Spring Security
 - Partner can view and record settlements only for payables where `contributor_payables.partner_id == principal.partner_id`.
 
 ### G. Rental Fee Refund Security (`@rentalRefundSecurity.canManageRefund(refundId, principal)`)
-- **CUSTOMER:** Can view only their own rental-fee refunds (`rental_fee_refunds.customer_user_id == principal.id`); can acknowledge receipt or dispute within 72 hours of disbursement.
+- **CUSTOMER:** Can view only their own rental-fee refunds (`rental_fee_refunds.customer_user_id == principal.id`); can explicitly acknowledge receipt (`CUSTOMER_ACKNOWLEDGED`) or dispute within 72 hours of disbursement (`DISPUTED_BY_CUSTOMER`).
 - **RENTAL_PARTNER:** Can view, initiate, and disburse rental-fee refunds ONLY for bookings/holds where `rental_fee_refunds.manager_partner_id == principal.partner_id`. Partner must be in `VERIFIED` status.
-- **ADMIN:** Full dispute arbitration, review of expired-hold exceptions, and administrative resolution.
+- **ADMIN:** Full dispute arbitration, review of expired-hold exceptions, and administrative resolution (`ADMIN_RESOLVED`), recording `dispute_ticket_id` (FK $\rightarrow$ `support_tickets.id`) and `resolved_by_admin_user_id` (FK $\rightarrow$ `users.id`).

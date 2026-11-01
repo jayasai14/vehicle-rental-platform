@@ -53,11 +53,11 @@ To eliminate legal, tax, and regulatory ambiguity, the platform clearly defines 
 | **Rental Service Provider** | **Rental Partner** | Furnishes the vehicle, handles physical custody, inspects vehicle condition. | Partner profile verified by Admin; partner legally contracts rental service to customer. |
 | **Customer Rental Payee** | **Rental Partner** | Customer transfers rental fee directly to partner's UPI QR, UPI ID, payment link, or cash at pickup. | Platform displays partner's payment profile; issues `rental_payment_demands`; captures customer `rental_payment_submissions`; partner verifies credit. Zero platform cash handling. |
 | **Payment Verification Gate** | **Rental Partner** | Partner independently inspects bank account/UPI app statements for inward credit. | **Strict Invariant:** ONLY partner verification marks payment as verified. Customer screenshot/UTR never auto-confirms payment. Accumulates verified submissions toward demand satisfaction. |
-| **Rental Fee Refund Execution** | **Rental Partner** | Partner executes external bank transfer/UPI back to customer for cancellations, overpayments, expired-hold exceptions, or dispute resolutions. | Platform calculates refundable amount via configurable policy snapshot; records refund obligations, partner UTR proof, and customer confirmations/disputes in `rental_fee_refunds`. Partner UTR $\neq$ customer received. Platform never triggers gateway transfers. |
+| **Rental Fee Refund Execution** | **Rental Partner** | Partner executes external bank transfer/UPI back to customer for cancellations, overpayments, expired-hold exceptions, or dispute resolutions. | Platform calculates refundable amount via configurable policy snapshot; records refund obligations, partner UTR proof, customer acknowledgements, and dispute resolutions in `rental_fee_refunds`. Partner UTR $\neq$ customer received. Separate states: `PENDING_PARTNER_DISBURSEMENT`, `DISBURSED_BY_PARTNER`, `CUSTOMER_ACKNOWLEDGED`, `DISPUTED_BY_CUSTOMER`, `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`, `ADMIN_RESOLVED`. Platform never triggers gateway transfers. |
 | **Security Deposit Custodian** | **Rental Partner** | Partner receives and holds security deposit directly in partner's bank/UPI account or cash. | Tracked in `security_deposits` as partner-held customer liability. Platform records expected deposit, collected amount, and UTR. Platform does NOT hold escrow. |
-| **Security Deposit Refund Execution** | **Rental Partner** | Partner executes external bank transfer/UPI back to customer for deposit release after deduction reconciliation. | Platform records deposit refund obligations, partner UTR proof, and customer confirmations in `security_deposit_refunds`. Platform never triggers gateway transfers. |
+| **Security Deposit Refund Execution** | **Rental Partner** | Partner executes external bank transfer/UPI back to customer for deposit release after deduction reconciliation. | Platform records deposit refund obligations, partner UTR proof, customer acknowledgements, and dispute states in `security_deposit_refunds`. Platform never triggers gateway transfers. |
 | **Contributor Compensation Debtor** | **Rental Partner** | Partner pays contributor agreed fixed compensation directly outside platform via NEFT/IMPS/UPI. | Obligation tracked in `contributor_payables`. Single lump-sum model per completed booking. Platform never disburses contributor funds. |
-| **Dispute Arbitration** | **Platform Admin** | Evaluates inspection photos, damage claims, cancellation appeals, and payment receipts if parties disagree. | Support tickets, incident mediation, refund arbitration, and deduction approval workflows (`deposit_deductions`, `rental_fee_refunds`). |
+| **Dispute Arbitration** | **Platform Admin** | Evaluates inspection photos, damage claims, cancellation appeals, and payment receipts if parties disagree. | Support tickets, incident mediation, refund arbitration, and deduction approval workflows (`deposit_deductions`, `rental_fee_refunds`, `security_deposit_refunds`). Clearly separates dispute case (`dispute_ticket_id` $\rightarrow$ `support_tickets.id`) from deciding Admin (`resolved_by_admin_user_id` $\rightarrow$ `users.id`). |
 | **Platform Monetization** | **Platform Operating Entity** | Separate commercial model (e.g., partner subscriptions or listing fees). | **Zero deductions from customer rental payments.** No commission splitting in MVP. |
 
 > [!IMPORTANT]
@@ -76,14 +76,37 @@ Every retained financial table in Module 7 records real-world obligations, submi
 - **Security Control:** NEVER stores sensitive bank credentials, UPI PINs, or OTPs. QR images and payment evidence are protected by secure access controls.
 
 ### 2.2 `rental_payment_demands`
-- **What it Records:** The explicit financial obligation demanded for a booking hold, booking extension, or late-fee charge (e.g., "Pay ₹2,400 to Partner X for Hold Y"). Tracks `amount_demanded` alongside `amount_satisfied` and independent lifecycle state (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`).
+- **What it Records:** The explicit financial obligation demanded for a booking hold, booking extension, or late-fee charge (e.g., "Pay ₹1,500 to Partner X for Hold Y"). Tracks `amount_demanded` alongside `amount_satisfied` and independent lifecycle state (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`).
 - **Multi-Submission Accumulation:** Multiple payment submissions can be linked to a single demand. The platform aggregates only `VERIFIED` submissions into `amount_satisfied`.
+- **Overpayment Accounting (Strict Representation):**
+  - If verified submissions total ₹1,800.00 against a ₹1,500.00 demand:
+    - `amount_demanded` = ₹1,500.00
+    - `total_verified_submitted` = ₹1,800.00 (aggregate sum of all verified submissions)
+    - `amount_satisfied` = ₹1,500.00 (**strictly capped at `amount_demanded`**; ₹1,800 is NEVER stored as the amount satisfying a ₹1,500 obligation)
+    - `excess_amount` = ₹300.00
+  - The demand transitions to `SATISFIED`, and the platform automatically creates a ₹300.00 refund obligation in `rental_fee_refunds` with `refund_reason = 'OVERPAYMENT_RETURN'`.
 - **Who Moves Money:** Generated by the platform system upon customer checkout initiation; settled by customer direct payment(s) to partner.
 - **Responsible Entity:** Platform generates demand based on vehicle pricing and deposit rules; Partner receives funds and verifies submissions.
 
 ### 2.3 `rental_payment_submissions`
 - **What it Records:** Individual customer-submitted payment attempts: payment method used (`UPI_QR`, `UPI_ID`, `EXTERNAL_LINK`, `CASH_AT_PICKUP`), transaction reference (Bank UTR / Cash receipt), exact amount transferred, transaction timestamp, receipt image key, and submission status (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`).
-- **Top-Up & Overpayment:** If a verified submission is less than `amount_demanded`, customer submits a top-up submission. If total verified submissions exceed `amount_demanded`, the excess amount is recorded and routed to `rental_fee_refunds` (`OVERPAYMENT_RETURN`).
+- **Top-Up & Overpayment:** If a verified submission is less than `amount_demanded`, customer submits a top-up submission. If total verified submissions exceed `amount_demanded`, the excess amount is recorded in `rental_payment_demands.excess_amount` and routed to `rental_fee_refunds` (`OVERPAYMENT_RETURN`).
+- **Late Payment After Hold Expiry (Immutable Recovery Flow):**
+  - When a booking hold's TTL expires, both `booking_holds` and `rental_payment_demands` transition to `EXPIRED`. They are **permanently immutable in their terminal state** and must **NEVER** be silently reopened or transitioned back to `SATISFIED`.
+  - When an external payment arrives after expiration:
+    1. Managing partner inspects their bank/UPI records and confirms receipt.
+    2. System marks the submission as `VERIFIED` with an audit note documenting late receipt against an expired demand. The expired demand remains `EXPIRED`.
+    3. System checks vehicle availability under pessimistic lock: `SELECT id FROM vehicles WHERE id = :vehicleId FOR UPDATE;`
+    4. **Case A (Vehicle Still Available):**
+       - Create a fresh `booking_holds` record linked to the expired hold via `recovered_from_hold_id = original_expired_hold.id`.
+       - Create a fresh `rental_payment_demands` record with `amount_demanded` equal to the booking obligation.
+       - Revalidate all booking conditions, driver eligibility, and turnaround buffers.
+       - Apply the previously verified payment amount to the new valid demand (`amount_satisfied = verified_amount`, status = `SATISFIED`) without duplicating the underlying payment.
+       - Transition the fresh hold to `CONVERTED` and insert a confirmed booking into `bookings`.
+    5. **Case B (Vehicle Unavailable / Conflict):**
+       - The booking cannot be recovered safely.
+       - Platform creates an immediate refund obligation in `rental_fee_refunds` with `refund_reason = 'EXPIRED_HOLD_EXCEPTION'` for the full verified amount.
+       - Partner executes the external bank/UPI refund directly to the customer and records proof.
 - **Who Moves Money:** Customer moves money directly to partner outside platform.
 - **Responsible Entity:** Customer submits proof; Managing Partner verifies or rejects.
 - **Duplicate Prevention:** Unique constraint `uk_submissions_partner_ref` (`manager_partner_id`, `transaction_reference`) prevents recycling references across bookings.
@@ -91,7 +114,34 @@ Every retained financial table in Module 7 records real-world obligations, submi
 ### 2.4 `rental_fee_refunds`
 - **What it Records:** Audit trail of rental-fee refunds initiated and executed directly by the rental partner when a confirmed booking is cancelled, an overpayment occurs, a payment exception/late payment on an expired hold is returned, or an Admin-approved dispute requires a rental-fee refund.
 - **Configurable Policy Snapshot:** Stores the exact cancellation policy rule in `cancellation_policy_snapshot` (JSON) evaluated at cancellation time, gross amount paid, cancellation fee deducted (if any), and net refundable amount. Never hardcodes percentages.
-- **Partner UTR Non-Equivalence Invariant:** Partner entering a UTR does NOT mean the customer received funds. Status moves to `DISBURSED_BY_PARTNER`. It becomes `CONFIRMED_BY_CUSTOMER` only upon customer acknowledgement or after the 72-hour dispute window expires without dispute.
+- **Refund State Machine & Acknowledgement Semantics:**
+  - `PENDING_PARTNER_DISBURSEMENT`: Refund obligation registered; partner must execute external payment.
+  - `DISBURSED_BY_PARTNER`: Partner executed external transfer and logged Bank UTR and receipt.
+  - `CUSTOMER_ACKNOWLEDGED`: Explicit customer confirmation via UI action. **This is the ONLY event that establishes customer-confirmed receipt.**
+  - `DISPUTED_BY_CUSTOMER`: Customer claims non-receipt within 72 hours of disbursement.
+  - `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`: 72-hour dispute window expired without explicit customer confirmation or dispute. **Expiry must NEVER be represented as customer acknowledgement.**
+  - `ADMIN_RESOLVED`: Authorized Admin arbitrated dispute, recording resolution details.
+- **Arbitration Foreign Keys & Case Separation:**
+  - Case Reference: `dispute_ticket_id` (FK $\rightarrow$ `support_tickets.id` ON DELETE SET NULL) identifies the support/dispute case.
+  - Deciding Admin: `resolved_by_admin_user_id` (FK $\rightarrow$ `users.id` ON DELETE SET NULL) identifies the authorized Admin who resolved the dispute.
+  - Audit Trail: `resolution_notes` VARCHAR(1000) and `resolved_at` DATETIME capture the determination.
+- **Transactional Aggregate Refund Limit Validation:**
+  - A row-level `CHECK (refund_amount <= gross_amount_paid)` constraint is **insufficient** across multiple partial refunds (e.g. overpayment return followed by partial cancellation refund).
+  - Every refund obligation creation executes inside a database transaction:
+    ```sql
+    -- Step 1: Lock the parent demand exclusively
+    SELECT id, amount_satisfied FROM rental_payment_demands WHERE id = :demandId FOR UPDATE;
+    
+    -- Step 2: Sum all prior uncancelled refunds
+    SELECT COALESCE(SUM(refund_amount), 0.00) FROM rental_fee_refunds 
+    WHERE demand_id = :demandId AND refund_status != 'CANCELLED';
+    
+    -- Step 3: Enforce aggregate limit
+    -- remaining_refundable = amount_satisfied - prior_refunds;
+    -- IF new_refund_amount > remaining_refundable THEN REJECT;
+    ```
+  - **Effect of Canceled / Failed Refunds:** If a refund is voided or cancelled (`CANCELLED`), its amount is excluded from cumulative refunds, restoring the refundable balance.
+  - Pessimistic locking prevents concurrent refund requests from both passing based on stale balances.
 - **Who Moves Money:** Rental Partner transfers funds directly to customer bank/UPI outside the platform.
 - **Responsible Entity:** Rental Partner executes refund; Platform monitors, audits, and arbitrates disputes.
 - **Duplicate Prevention:** Unique constraint `uk_rental_refunds_partner_utr` (`manager_partner_id`, `partner_transaction_reference`).
@@ -103,11 +153,14 @@ Every retained financial table in Module 7 records real-world obligations, submi
 
 ### 2.6 `deposit_deductions`
 - **What it Records:** Itemized damage, fuel deficit, late return, or traffic fine claims against a security deposit, with mandatory inspection evidence and status (`PROPOSED`, `DISPUTED`, `APPROVED_BY_ADMIN`, `AGREED_BY_CUSTOMER`, `CANCELLED`).
+- **Dispute Arbitration Separation:** Disputed claims link to `dispute_ticket_id` (FK $\rightarrow$ `support_tickets.id`) for the case and `resolved_by_admin_user_id` (FK $\rightarrow$ `users.id`) for the deciding Admin, alongside `resolution_notes` and `resolved_at`.
 - **Who Moves Money:** Executed via deposit retention by partner; no cash moves if settled from deposit.
 - **Responsible Entity:** Rental Partner proposes; Customer agrees or disputes; Admin arbitrates unresolved claims.
 
 ### 2.7 `security_deposit_refunds`
 - **What it Records:** Audit trail of deposit refunds executed directly by the partner: refund amount, refund method, transaction reference (Bank UTR), proof document, refund timestamp, customer confirmation, and dispute notes.
+- **State Machine Alignment:** Governed by identical lifecycle states (`PENDING_PARTNER_DISBURSEMENT`, `DISBURSED_BY_PARTNER`, `CUSTOMER_ACKNOWLEDGED`, `DISPUTED_BY_CUSTOMER`, `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`, `ADMIN_RESOLVED`).
+- **Arbitration Foreign Keys:** Links to `dispute_ticket_id` (`support_tickets.id`) and `resolved_by_admin_user_id` (`users.id`).
 - **Who Moves Money:** Rental Partner transfers funds directly to customer bank/UPI outside the platform.
 - **Responsible Entity:** Rental Partner executes refund; Platform monitors and audits.
 
@@ -154,7 +207,7 @@ The platform preserves the core business model for contributor-owned vehicles:
 3. **Anti-Fraud Controls:**
    - **No Auto-Verification:** Customer uploads NEVER automatically verify payments.
    - **Unique Reference Constraints:** Duplicate UTRs for the same partner are rejected by database unique constraints on both inbound payments (`uk_submissions_partner_ref`) and refunds (`uk_rental_refunds_partner_utr`).
-   - **Partner UTR Non-Equivalence Invariant:** Partner entry of a refund UTR marks status `DISBURSED_BY_PARTNER` but does NOT constitute proof of receipt; customer acknowledgement or 72-hour dispute window expiry is required for `CONFIRMED_BY_CUSTOMER`.
+   - **Partner UTR Non-Equivalence Invariant:** Partner entry of a refund UTR marks status `DISBURSED_BY_PARTNER` but does NOT constitute proof of customer receipt. Explicit customer UI confirmation is strictly required for `CUSTOMER_ACKNOWLEDGED`. If 72 hours elapse without dispute or confirmation, status transitions to `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`. Expiry is never represented as customer acknowledgement. Disputed refunds (`DISPUTED_BY_CUSTOMER`) are resolved by Admin (`ADMIN_RESOLVED`).
    - **Verification Audit Trail:** Every verification or rejection records the acting user ID, timestamp, previous status, new status, and reason in `audit_logs`.
 4. **Evidence Storage Security:**
    - Uploaded UPI QR images, payment receipts, and inspection media are stored in Cloudinary/S3 using secure, non-public object keys accessed via short-lived presigned URLs.

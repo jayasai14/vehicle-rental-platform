@@ -129,22 +129,26 @@
 - `POST /api/v1/booking-holds/{holdId}/submit-payment` - Customer submits direct payment proof against hold demand: payment method, transaction reference / UTR, amount, transaction timestamp, optional receipt image. Transitions hold to `VERIFICATION_PENDING`.
 - `POST /api/v1/payment-demands/{demandId}/submit-payment` - Customer submits initial or top-up direct payment submission against an active payment demand.
 - `GET /api/v1/partner/payment-submissions` - Partner views pending payment submissions requiring verification (`SUBMITTED_FOR_VERIFICATION`).
-- `POST /api/v1/partner/payment-submissions/{submissionId}/verify` - Partner verifies funds received in their bank/UPI account; accumulates amount into `demand.amount_satisfied`. When demand is `SATISFIED`, transitions hold to `CONVERTED` and creates `bookings` row (`CONFIRMED`).
+- `POST /api/v1/partner/payment-submissions/{submissionId}/verify` - Partner verifies funds received in their bank/UPI account; accumulates amount into `demand.amount_satisfied` (strictly capped at `demand.amount_demanded`) and updates `total_verified_submitted` and `excess_amount`. When demand is `SATISFIED`, transitions hold to `CONVERTED` and creates `bookings` row (`CONFIRMED`).
 - `POST /api/v1/partner/payment-submissions/{submissionId}/reject` - Partner rejects payment submission with mandatory reason; notifies customer to submit top-up or valid reference.
 - `GET /api/v1/customer/payment-submissions` - Customer tracks submitted payment proof, accumulated verified amount, and remaining demand balance.
-- `POST /api/v1/partner/rental-fee-refunds` - Partner initiates and records direct rental-fee refund (booking cancellation, overpayment, expired-hold exception) with mandatory UTR reference, proof document, gross amount, fee deducted, net refund amount, and policy snapshot.
+- `POST /api/v1/partner/booking-holds/{holdId}/recover-late-payment` - **Late Payment Recovery Flow:** Triggered when external payment arrives after hold/demand expiration. Partner confirms receipt (submission marked `VERIFIED` on expired demand). Under `SELECT FOR UPDATE`, system verifies vehicle availability:
+  - If available: Creates fresh hold (`recovered_from_hold_id = holdId`) and fresh demand; applies verified payment; revalidates booking conditions; confirms booking.
+  - If unavailable: Creates `rental_fee_refunds` obligation (`EXPIRED_HOLD_EXCEPTION`).
+- `POST /api/v1/partner/rental-fee-refunds` - Partner initiates and records direct rental-fee refund (booking cancellation, overpayment, expired-hold exception) with mandatory UTR reference, proof document, gross amount, fee deducted, net refund amount, and policy snapshot. **Transactional Validation:** Enforces aggregate limit against `demand_id` under `SELECT FOR UPDATE`, excluding canceled refunds. Status transitions to `DISBURSED_BY_PARTNER`.
 - `GET /api/v1/partner/rental-fee-refunds` - Partner views rental-fee refund obligations and history.
 - `GET /api/v1/customer/rental-fee-refunds` - Customer views rental-fee refund records and statuses.
-- `POST /api/v1/customer/rental-fee-refunds/{refundId}/acknowledge` - Customer acknowledges receipt of rental-fee refund.
-- `POST /api/v1/customer/rental-fee-refunds/{refundId}/dispute` - Customer disputes non-receipt of rental-fee refund within 72 hours.
-- `POST /api/v1/admin/rental-fee-refunds/{refundId}/resolve` - Admin arbitrates rental-fee refund dispute.
+- `POST /api/v1/customer/rental-fee-refunds/{refundId}/acknowledge` - Customer explicitly acknowledges receipt of rental-fee refund (`CUSTOMER_ACKNOWLEDGED`). **Only event establishing confirmed receipt.**
+- `POST /api/v1/customer/rental-fee-refunds/{refundId}/dispute` - Customer disputes non-receipt of rental-fee refund within 72 hours (`DISPUTED_BY_CUSTOMER`). Automatically links/creates a dispute case ticket (`support_tickets`). (If 72h elapses without action, system background worker marks `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`).
+- `POST /api/v1/admin/rental-fee-refunds/{refundId}/resolve` - Admin arbitrates dispute (`ADMIN_RESOLVED`), persisting `dispute_ticket_id` (FK $\rightarrow$ `support_tickets.id`), `resolved_by_admin_user_id` (FK $\rightarrow$ `users.id`), `resolution_notes`, and `resolved_at`.
 - `GET /api/v1/bookings/{bookingId}/security-deposit` - View security deposit status in partner custody.
 - `POST /api/v1/partner/bookings/{bookingId}/security-deposit/deductions` - Partner proposes evidence-based damage/fuel deduction.
 - `POST /api/v1/customer/deposit-deductions/{deductionId}/dispute` - Customer disputes proposed deduction within 48h.
-- `POST /api/v1/admin/deposit-deductions/{deductionId}/resolve` - Admin arbitrates dispute (**never auto-approved upon 48h expiration**).
-- `POST /api/v1/partner/bookings/{bookingId}/security-deposit/record-refund` - Partner records direct deposit refund to customer (refund amount, method, UTR reference, proof document).
-- `POST /api/v1/customer/security-deposit-refunds/{refundId}/acknowledge` - Customer acknowledges receipt of deposit refund.
-- `POST /api/v1/customer/security-deposit-refunds/{refundId}/dispute` - Customer disputes non-receipt of deposit refund funds.
+- `POST /api/v1/admin/deposit-deductions/{deductionId}/resolve` - Admin arbitrates dispute (**never auto-approved upon 48h expiration**), linking `dispute_ticket_id` and `resolved_by_admin_user_id`.
+- `POST /api/v1/partner/bookings/{bookingId}/security-deposit/record-refund` - Partner records direct deposit refund to customer (refund amount, method, UTR reference, proof document). Status moves to `DISBURSED_BY_PARTNER`.
+- `POST /api/v1/customer/security-deposit-refunds/{refundId}/acknowledge` - Customer explicitly acknowledges receipt of deposit refund (`CUSTOMER_ACKNOWLEDGED`).
+- `POST /api/v1/customer/security-deposit-refunds/{refundId}/dispute` - Customer disputes non-receipt of deposit refund funds within 72 hours (`DISPUTED_BY_CUSTOMER`). Links to `support_tickets`. (72h timeout transitions to `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`).
+- `POST /api/v1/admin/security-deposit-refunds/{refundId}/resolve` - Admin arbitrates deposit refund dispute (`ADMIN_RESOLVED`), linking `dispute_ticket_id` and `resolved_by_admin_user_id`.
 - `GET /api/v1/partner/contributor-payables` - Partner lists contractual fixed fee obligations owed to contributors (`contributor_payables`).
 - `POST /api/v1/partner/contributor-payables/{payableId}/record-settlement` - **Approach A Baseline:** Partner records single complete direct bank transfer with mandatory UTR reference, payment date, and receipt attachment.
 - `POST /api/v1/contributor/contributor-payables/{payableId}/acknowledge` - Contributor confirms receipt of direct partner settlement.

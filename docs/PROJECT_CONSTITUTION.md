@@ -65,8 +65,9 @@ This document is the governing contract for all human contributors, engineering 
 - **Decoupled Payment Demand & Submission Lifecycles:**
   - A payment demand (`rental_payment_demands`) represents the total amount owed by the customer for a hold, extension, or invoice. Its lifecycle is governed by financial demand states: `OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, and `CANCELLED`.
   - A payment submission (`rental_payment_submissions`) represents an individual external transfer or cash transaction submitted by the customer. Its lifecycle is: `SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, and `REJECTED`.
-  - Multiple submissions against a single demand are fully supported. Verified partial payments accumulate in `rental_payment_demands.amount_satisfied`. Top-up payments can be submitted by the customer while the hold is active until the demand is `SATISFIED`.
-  - Overpayments (cumulative verified submissions exceeding demand) transition the demand to `SATISFIED` and automatically trigger a partner refund obligation in `rental_fee_refunds` for the excess amount.
+  - Multiple submissions against a single demand are fully supported. Verified partial payments accumulate in `rental_payment_demands.total_verified_submitted` and apply to `amount_satisfied` (strictly capped at `amount_demanded`). Top-up payments can be submitted by the customer while the hold is active until the demand is `SATISFIED`.
+  - **Overpayment Accounting:** For a ₹1,800 verified payment against a ₹1,500 demand, the system records `total_verified_submitted = 1800.00`, `amount_satisfied = 1500.00`, and `excess_amount = 300.00`. The system **never** stores ₹1,800 as satisfying a ₹1,500 obligation. The excess ₹300 automatically triggers an `OVERPAYMENT_RETURN` refund record in `rental_fee_refunds`.
+  - **Transactional Aggregate Refund Limit Validation:** Cumulative rental-fee refunds are validated transactionally under a pessimistic row lock (`SELECT ... FOR UPDATE` on parent demand). A new refund is rejected if `new_refund_amount > (gross_refundable_pool - cumulative_committed_refunds)`. Canceled/rejected refunds do not consume balance.
 - **Anti-Auto-Verification Invariant:**
   - **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as successful or confirm a booking.**
   - **ONLY verified partner confirmation** (`POST /api/v1/partner/payment-submissions/{id}/verify`) can transition submission status to `VERIFIED` and accumulate toward demand satisfaction.
@@ -75,9 +76,13 @@ This document is the governing contract for all human contributors, engineering 
   1. Availability and vehicle assignment are valid under an exclusive vehicle row lock.
   2. The applicable rental payment demands are `SATISFIED` through verified submissions, OR an explicit partner-approved pay-at-pickup policy permits the required unpaid amount.
   3. Any required security-deposit policy is satisfied.
-  4. The hold is still valid (`status = 'ACTIVE'` or `status = 'VERIFICATION_PENDING'`) or the booking is otherwise safely revalidated under the vehicle lock.
+  4. The hold is still valid (`status = 'ACTIVE'` or `status = 'VERIFICATION_PENDING'`) or safely revalidated under the vehicle lock.
   - **An expired hold must NEVER be silently converted to a confirmed booking.**
   - For pay-at-pickup bookings, the outstanding obligation is recorded in `rental_payment_demands`, and **physical vehicle handover is strictly blocked** until required collections are verified by the partner at pickup.
+- **Correct Late Payment Recovery After Hold Expiry:**
+  - The original hold and demand become permanently immutable in `EXPIRED`.
+  - If a payment arrives after expiry and is confirmed by the partner, the submission is recorded as `VERIFIED` with audit notes. The expired demand is **never reopened**.
+  - Availability is checked under `SELECT FOR UPDATE`: if available, a fresh hold (`recovered_from_hold_id`) and fresh demand are generated, the verified payment is applied to the new demand, and the booking is confirmed; if unavailable, a `rental_fee_refunds` obligation (`EXPIRED_HOLD_EXCEPTION`) is created for partner external return.
 
 ### 3.3 Financial, Refund & Contributor Settlement Invariants (Partner-Direct Model)
 - **Zero Platform Cash Handling in MVP:**
@@ -85,14 +90,22 @@ This document is the governing contract for all human contributors, engineering 
   - The rental partner is the customer-facing rental service provider and direct payee for all bookings on vehicles they manage.
   - The platform does not deduct commission from customer payments in the MVP. Any future platform monetization or subscription model is a separate business flow.
 - **Partner Payment Profiles:** Each verified partner maintains a `partner_payment_profiles` record detailing their public-facing payee name, UPI ID, UPI QR code image, accepted payment methods, and pay-at-pickup configuration.
-- **Rental-Fee Refund Tracking (`rental_fee_refunds`):**
-  - The platform tracks partner-initiated rental-fee refunds for confirmed booking cancellations, payment exceptions, overpayment returns, late payments on expired holds, and admin-approved dispute resolutions.
-  - **Configurable Cancellation Policies:** Cancellation refund amounts are determined strictly from configurable business rules snapshot in `cancellation_policy_snapshot`—percentages and fee tiers are never hardcoded in application logic.
-  - **Direct External Transfer:** The partner transfers refund money directly outside the platform via UPI/IMPS/NEFT. The platform records transaction references, proof, and timestamps.
-  - **Partner UTR Non-Equivalence Invariant:** A partner-entered UTR does **not** automatically mean the customer received the refund. It transitions status to `DISBURSED_BY_PARTNER`; customer acknowledgement or expiration of the 72-hour dispute window is required for final confirmation (`CONFIRMED_BY_CUSTOMER`).
-- **Security Deposit Direct Custody & Refunds (`security_deposits`, `deposit_deductions`, `security_deposit_refunds`):**
+- **Refund Acknowledgement Semantics & States (`rental_fee_refunds`, `security_deposit_refunds`):**
+  - Both refund state machines enforce distinct states:
+    1. `PENDING_PARTNER_DISBURSEMENT`
+    2. `DISBURSED_BY_PARTNER`
+    3. `CUSTOMER_ACKNOWLEDGED`
+    4. `DISPUTED_BY_CUSTOMER`
+    5. `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`
+    6. `ADMIN_RESOLVED`
+  - **Explicit Acknowledgement Rule:** An explicit customer acknowledgement in the UI is the **ONLY** event that establishes customer-confirmed receipt (`CUSTOMER_ACKNOWLEDGED`).
+  - **Non-Equivalence of Window Expiry:** Expiry of the 72-hour dispute window transitions the refund to `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`. It must **never** be represented as customer acknowledgement.
+  - **Dispute Arbitration:** Disputed refunds escalate to Admin arbitration via an explicit support ticket reference (`dispute_ticket_id` FK $\rightarrow$ `support_tickets.id`) and record the deciding Admin (`resolved_by_admin_user_id` FK $\rightarrow$ `users.id`), resolution notes, and timestamp upon transitioning to `ADMIN_RESOLVED`.
+- **Configurable Cancellation Policies:** Cancellation refund amounts are determined strictly from configurable business rules snapshot in `cancellation_policy_snapshot`—percentages and fee tiers are never hardcoded in application logic.
+- **Direct External Transfer:** The partner transfers refund money directly outside the platform via UPI/IMPS/NEFT. The platform records transaction references, proof, and timestamps.
+- **Security Deposit Direct Custody & Evidence-Based Deductions:**
   - The rental partner directly receives, holds, and refunds customer security deposits as distinct records from rental fees.
-  - Granular damage deduction claims require photographic inspection evidence.
+  - Granular damage deduction claims require photographic inspection evidence and reference `support_tickets` and deciding Admin upon arbitration.
   - **No Automatic Approval:** A customer non-response does **never** automatically approve a partner's damage deduction claim. Unresolved disputes require Admin review.
 - **Contributor Compensation (Approach A Direct Settlement):**
   - The rental partner is the sole legal debtor for the contributor's agreed fixed compensation per eligible completed booking.

@@ -191,8 +191,8 @@ Hardcoding operational parameters into application code prevents business tuning
    - Scooter turnaround buffer: 30 minutes.
    - Contributor settlement mode: Direct partner payment (Approach A).
    - Vehicle withdrawal notice: Recommended 7 days, subject to confirmed bookings.
-   - Deposit dispute response window: 48 hours.
-   - Customer refund acknowledgement window: 72 hours.
+   - Deposit dispute response window: 48 hours (never auto-approved upon timeout; requires Admin verification).
+   - Customer refund dispute window: 72 hours (non-disputed transitions to DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED; explicit customer UI action strictly required for CUSTOMER_ACKNOWLEDGED).
    - Overdue return grace period: 30 minutes.
 
 ---
@@ -258,28 +258,51 @@ The platform adopts **PARTNER-DIRECT PAYMENT COLLECTION WITH DECOUPLED STATE MAC
    - Partner's UPI ID (VPA displayed with copy button).
    - Partner's external payment link (if configured).
    - Cash at pickup (only if explicitly enabled by the partner).
-4. **Decoupled Payment Demands and Submissions:**
+4. **Decoupled Payment Demands, Submissions & Overpayment Accounting:**
    - `rental_payment_demands`: Models the total financial obligation (`OPEN`, `PARTIALLY_SATISFIED`, `SATISFIED`, `EXPIRED`, `CANCELLED`).
    - `rental_payment_submissions`: Models individual customer payments/proof (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`).
    - Multiple submissions accumulate verified amounts in `rental_payment_demands.amount_satisfied`. Top-up payments are supported.
-   - Overpayments (verified amounts > demanded) transition the demand to `SATISFIED` and trigger an overpayment refund in `rental_fee_refunds`.
+   - **Overpayment Accounting (Strict Representation):** For a ₹1,800 verified payment against a ₹1,500 demand:
+     - `total_verified_submitted`: ₹1,800.00
+     - `amount_satisfied`: ₹1,500.00 (strictly capped at `amount_demanded`; never store ₹1,800 as satisfying a ₹1,500 obligation)
+     - `excess_amount`: ₹300.00 (triggers automated refund obligation in `rental_fee_refunds` under reason `OVERPAYMENT_RETURN`).
 5. **Strict Partner Verification Gate (Invariant):**
    - **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as verified or confirm a booking.**
    - The partner independently verifies their own UPI, bank, or cash records.
    - ONLY an explicit action by the managing partner marks a submission `VERIFIED`.
-6. **Booking Confirmation Invariant:**
-   A booking can be confirmed ONLY when:
-   - Availability and vehicle assignment are valid under row lock (`SELECT ... FOR UPDATE`).
-   - Demands are `SATISFIED` through verified submissions, OR partner-approved pay-at-pickup policy permits unpaid balance.
-   - Any required security-deposit policy is satisfied.
-   - Hold is still valid or safely revalidated under vehicle lock. An expired hold is **NEVER** silently confirmed.
-   - For pay-at-pickup, vehicle handover is blocked until required collections are verified at pickup.
-7. **Rental-Fee Refund Tracking (`rental_fee_refunds`):**
+6. **Booking Confirmation Invariant & Late Payment Recovery:**
+   - A booking can be confirmed ONLY when:
+     - Availability and vehicle assignment are valid under row lock (`SELECT ... FOR UPDATE`).
+     - Demands are `SATISFIED` through verified submissions, OR partner-approved pay-at-pickup policy permits unpaid balance.
+     - Any required security-deposit policy is satisfied.
+     - Hold is still valid or safely revalidated under vehicle lock. An expired hold is **NEVER** silently confirmed or reopened.
+     - For pay-at-pickup, vehicle handover is blocked until required collections are verified at pickup.
+   - **Late Payment Recovery After Hold Expiry:**
+     - Original booking hold and payment demand become permanently immutable in `EXPIRED`.
+     - When an external payment arrives late:
+       1. Partner confirms external payment arrival.
+       2. System records payment submission as `VERIFIED` with audit notes.
+       3. System checks vehicle availability under `SELECT ... FOR UPDATE`.
+       4. **Case A (Vehicle Available):** Create a fresh booking hold (`recovered_from_hold_id = original_hold.id`) and fresh demand. Revalidate all booking conditions, apply verified payment to the new demand, and transition booking to `CONFIRMED`.
+       5. **Case B (Vehicle Unavailable / Conflict):** Create a `rental_fee_refunds` obligation (`refund_reason = 'EXPIRED_HOLD_EXCEPTION'`). Partner executes direct external refund and records proof.
+7. **Rental-Fee Refund Tracking & Aggregate Validation (`rental_fee_refunds`):**
    - Independent application table tracking partner-executed rental fee refunds for booking cancellations, overpayments, expired-hold late payments, and dispute resolutions.
    - Cancellation refund amounts are determined dynamically from configurable business rules snapshotted in `cancellation_policy_snapshot` (never hardcoded).
-   - Partner-entered UTR transitions status to `DISBURSED_BY_PARTNER`. Customer confirmation or 72h dispute window required (`CONFIRMED_BY_CUSTOMER` or `DISPUTED_BY_CUSTOMER`).
-8. **Security Deposit Direct Custody & Refunds (`security_deposits`, `deposit_deductions`, `security_deposit_refunds`):**
-   - Partner directly collects, holds, and refunds security deposits.
+   - **Separate Refund Lifecycle States:**
+     - `PENDING_PARTNER_DISBURSEMENT`: Refund obligation created, awaiting partner payout.
+     - `DISBURSED_BY_PARTNER`: Partner executed external transfer and logged UTR/proof.
+     - `CUSTOMER_ACKNOWLEDGED`: Explicit confirmation by customer in UI. **This is the ONLY event establishing customer-confirmed receipt.**
+     - `DISPUTED_BY_CUSTOMER`: Customer raised dispute within 72 hours of disbursement.
+     - `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`: 72-hour window elapsed without dispute or customer acknowledgement. Expiry must **never** be represented as customer acknowledgement.
+     - `ADMIN_RESOLVED`: Authorized Admin adjudicated dispute, linking `dispute_ticket_id` (`support_tickets.id`), `resolved_by_admin_user_id` (`users.id`), and resolution notes.
+   - **Transactional Aggregate Refund Validation:**
+     - A row-level CHECK constraint alone is insufficient to enforce limits across multiple refund rows.
+     - System acquires a pessimistic row lock (`SELECT * FROM rental_payment_demands WHERE id = :demandId FOR UPDATE`).
+     - Sums all existing active refunds (`refund_status != 'CANCELLED'`). Canceled refund records do not decrement the refundable pool.
+     - Rejects any new refund where `refund_amount > (gross_refundable_pool - cumulative_active_refunds)`. Concurrent refund attempts queue safely behind the lock.
+8. **Security Deposit Direct Custody, Refunds & Dispute Arbitration:**
+   - Partner directly collects, holds, and refunds security deposits (`security_deposits`, `deposit_deductions`, `security_deposit_refunds`).
+   - Deductions and refunds share the exact same dispute/acknowledgement lifecycle semantics and arbitration foreign keys (`dispute_ticket_id` $\rightarrow$ `support_tickets.id`, `resolved_by_admin_user_id` $\rightarrow$ `users.id`).
    - Disputed damage claims require evidence and never auto-approve on timeout; require Admin arbitration.
 9. **Contributor Compensation (Approach A Preserved):**
    - Partner owes contributor an agreed fixed fee per completed booking.

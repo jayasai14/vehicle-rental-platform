@@ -34,10 +34,10 @@ The MVP adopts a **Partner-Direct Payment Collection** model (ADR-018):
 
 ## Core Roles & Capabilities
 
-- `CUSTOMER`: Browse, compare, create 15-minute booking holds, view managing partner payment instructions, submit payment references (UTR / receipt), track verification status, participate in inspections, dispute deposit deductions (48h window), view own payments and verification records.
+- `CUSTOMER`: Browse, compare, create 15-minute booking holds, view managing partner payment instructions, submit payment references (UTR / receipt), track verification status, participate in inspections, dispute deposit deductions (48h window), explicitly acknowledge or dispute refunds (72h window), view own payments and verification records.
 - `VEHICLE_CONTRIBUTOR`: Submit personally owned vehicles, review partner offers, manage agreements/availability requests, participate in direct handover/return inspections, acknowledge direct handovers, view earnings and settlement statuses (with UTR references), acknowledge or dispute direct settlements, request vehicle withdrawal.
 - `RENTAL_PARTNER (VERIFIED)`: Maintain partner business profile, configure direct payment profile (UPI QR/ID/Link), verify or reject customer payment submissions, manage hubs and pickup locations, register independently owned fleet, review contributor vehicle submissions, manage accepted vehicles and bookings, conduct inspections, manage direct deposit custody and refunds, and record direct contributor settlements with UTR (Approach A).
-- `ADMIN`: Verify partners and vehicles, arbitrate deposit disputes and damage claims, oversee compliance, and view security audit logs. Admin access is permission-controlled and audited.
+- `ADMIN`: Verify partners and vehicles, arbitrate deposit and rental-fee refund disputes linking support tickets, oversee compliance, and view security audit logs. Admin access is permission-controlled and audited.
 
 ---
 

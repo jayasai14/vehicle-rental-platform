@@ -242,17 +242,20 @@ Rental fee refunds are tracked independently in `rental_fee_refunds`. The rental
 │                     Status: DISBURSED_BY_PARTNER                                       │
 │          (Partner UTR entry does NOT mean customer has received funds!)                │
 │                                │                                                       │
-│           ┌────────────────────┴────────────────────┐                                  │
-│           ▼                                         ▼                                  │
-│  [Customer Acknowledges Receipt]          [Customer Disputes Non-Receipt / Short Amt]  │
-│  (Or 72h dispute window expires)          (Within 72-hour window)                      │
-│           │                                         │                                  │
-│           ▼                                         ▼                                  │
-│  Status: CONFIRMED_BY_CUSTOMER             Status: DISPUTED_BY_CUSTOMER                │
-│                                                     │                                  │
-│                                                     ▼                                  │
-│                                            Admin Dispute Arbitration                   │
-│                                            (Inspects bank statements / UTR validity)   │
+│           ┌────────────────────┼─────────────────────────┐                             │
+│           ▼                    ▼                         ▼                             │
+│  [Customer Acknowledges]  [72h Window Expires]   [Customer Disputes (within 72h)]       │
+│  (Clicks in UI)           (Zero dispute/ack)     (Funds not received / Short amount)   │
+│           │                    │                         │                             │
+│           ▼                    ▼                         ▼                             │
+│  CUSTOMER_ACKNOWLEDGED   DISPUTE_WINDOW_ELAPSED    Status: DISPUTED_BY_CUSTOMER        │
+│                          _UNACKNOWLEDGED                 │                             │
+│                                                          ▼                             │
+│                                                   Admin Dispute Arbitration            │
+│                                                   (support_tickets & bank evidence)     │
+│                                                          │                             │
+│                                                          ▼                             │
+│                                                   Status: ADMIN_RESOLVED               │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -272,13 +275,22 @@ Rental fee refunds are tracked independently in `rental_fee_refunds`. The rental
 4. **Evidence & Record-Keeping:**
    - The partner logs the external Bank UTR, disbursement timestamp, and receipt image into `rental_fee_refunds`.
    - Unique constraint `uk_rental_refunds_partner_utr` prevents reference recycling across disbursements.
-5. **Customer Dispute Workflow:**
-   - If the customer does not receive funds within 72 hours of partner disbursement, or if the received amount is short, the customer can open a dispute.
-   - The dispute moves to `ADMIN_ARBITRATION`. Admin inspects customer and partner bank proofs before issuing an administrative resolution.
-6. **Late-Payment Exceptions without Confirmed Booking:**
-   - When payment arrives or is verified on an expired hold, no confirmed booking exists.
-   - The platform records the refund in `rental_fee_refunds` referencing `hold_id` and `demand_id` with `booking_id = NULL` and `refund_reason = LATE_PAYMENT_EXPIRED_HOLD`.
-   - Ensures complete auditability and partner refund accountability even when inventory was lost.
+5. **Customer Acknowledgement & Dispute Workflow:**
+   - **Strict Acknowledgement Semantics:** Explicit customer acknowledgement in the UI is the ONLY event establishing customer-confirmed receipt (`CUSTOMER_ACKNOWLEDGED`).
+   - **Dispute Window Expiry:** If 72 hours elapse with no dispute and no explicit customer acknowledgement, status becomes `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`. Expiry of the dispute window is NEVER represented as customer acknowledgement.
+   - If the customer reports non-receipt or short amount within 72 hours, a support ticket (`support_tickets`) is opened, and status transitions to `DISPUTED_BY_CUSTOMER`.
+   - An authorized Admin inspects customer and partner bank proofs before issuing an administrative resolution, recording `dispute_ticket_id`, `resolved_by_admin_user_id`, `resolution_notes`, and `resolved_at` upon transitioning to `ADMIN_RESOLVED`.
+6. **Correct Late-Payment Recovery After Hold Expiry:**
+   - An expired hold and expired payment demand remain permanently immutable in `EXPIRED`.
+   - When a payment arrives or is verified on an expired hold:
+     1. Partner confirms the external payment actually arrived.
+     2. System records the submission as `VERIFIED` with audit notes. The expired demand is **never reopened**.
+     3. System checks vehicle availability under `SELECT ... FOR UPDATE`.
+     4. If available, the system creates a fresh hold (`recovered_from_hold_id = original_expired_hold.id`), generates a fresh payment demand, applies the verified payment (`amount_satisfied = verified_amount`), revalidates booking conditions, and confirms the booking.
+     5. If the vehicle is unavailable or booking cannot be safely recovered, the system creates a `rental_fee_refunds` obligation (`refund_reason = EXPIRED_HOLD_EXCEPTION`). The partner executes an external refund and records proof.
+7. **Overpayment Accounting & Aggregate Refund Limits:**
+   - For a verified payment of ₹1,800 against a ₹1,500 demand: `total_verified_submitted = 1800.00`, `amount_satisfied = 1500.00` (capped), and `excess_amount = 300.00`. The system never stores ₹1,800 as satisfying a ₹1,500 obligation. The excess ₹300 triggers an automated refund obligation in `rental_fee_refunds`.
+   - Cumulative rental-fee refunds are enforced transactionally under a pessimistic row lock on the parent demand (`SELECT ... FOR UPDATE`). Total active refunds (`PENDING_PARTNER_DISBURSEMENT`, `DISBURSED_BY_PARTNER`, `CUSTOMER_ACKNOWLEDGED`, `DISPUTED_BY_CUSTOMER`, `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`, `ADMIN_RESOLVED`) cannot exceed the gross refundable balance. Canceled refund records do not consume balance.
 
 ---
 

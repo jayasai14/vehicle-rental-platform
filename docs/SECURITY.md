@@ -61,11 +61,32 @@ Security is an architectural baseline enforced at the data, transport, and appli
 ## 4. Partner-Direct Payment, Verification & Anti-Fraud Security
 
 - **Strict Verification Invariant:** A customer-uploaded screenshot, receipt, or UTR must **NEVER** automatically mark a payment as verified or confirm a booking. ONLY an explicit API call by an authenticated user belonging to the managing partner organization can mark the submission `VERIFIED`.
-- **Decoupled Payment Accumulation:** Individual verified submissions aggregate into `rental_payment_demands.amount_satisfied`. Top-ups are submitted until the demand is satisfied.
-- **Overpayment Handling:** Any verified excess amount above `amount_demanded` is flagged and an automated refund obligation is created in `rental_fee_refunds` (`refund_reason = 'OVERPAYMENT_RETURN'`).
+- **Decoupled Payment Accumulation & Overpayment Accounting:**
+  - Individual verified submissions aggregate into `rental_payment_demands.total_verified_submitted`.
+  - `amount_satisfied` is **strictly capped** at `amount_demanded`. Excess funds are never recorded as satisfying the primary obligation.
+  - `excess_amount` is computed and automatically triggers a refund obligation in `rental_fee_refunds` (`refund_reason = 'OVERPAYMENT_RETURN'`).
 - **Duplicate Reference Prevention:** Database unique constraints prevent reference recycling across both inbound submissions (`uk_submissions_partner_ref` on `(manager_partner_id, transaction_reference)`) and refunds (`uk_rental_refunds_partner_utr` on `(manager_partner_id, partner_transaction_reference)`).
-- **Partner UTR Non-Equivalence Invariant:** Partner entry of a refund UTR marks status `DISBURSED_BY_PARTNER`. It does NOT prove customer receipt. Status transitions to `CONFIRMED_BY_CUSTOMER` only upon customer acknowledgement or upon expiry of the 72-hour dispute window.
-- **Booking Confirmation Invariant:** A booking can ONLY be confirmed when: (1) exclusive vehicle lock is held; (2) demands are `SATISFIED` through verified submissions (or partner pay-at-pickup is explicitly approved); (3) required security deposit policy is satisfied; and (4) the booking hold is still valid or safely revalidated under vehicle lock. An expired hold is NEVER silently confirmed. Late payments on expired holds where the vehicle is reallocated must be refunded via `rental_fee_refunds`.
+- **Partner UTR Non-Equivalence & Acknowledgement Invariant:**
+  - Partner entry of a refund UTR marks status `DISBURSED_BY_PARTNER`. It does NOT prove customer receipt.
+  - An explicit customer UI action is the **ONLY** event establishing customer-confirmed receipt (`CUSTOMER_ACKNOWLEDGED`).
+  - If 72 hours elapse without dispute or acknowledgement, status transitions to `DISPUTE_WINDOW_ELAPSED_UNACKNOWLEDGED`. Expiry of the dispute window must **never** be represented as customer acknowledgement.
+- **Dispute Arbitration Case Separation:**
+  - Disputed refunds (`rental_fee_refunds`, `security_deposit_refunds`) and deductions (`deposit_deductions`) are arbitrated by an authorized Admin (`ADMIN_RESOLVED`).
+  - Schema strictly separates the support/dispute case (`dispute_ticket_id` $\rightarrow$ `support_tickets.id`) from the deciding Admin (`resolved_by_admin_user_id` $\rightarrow$ `users.id`), with mandatory `resolution_notes` and `resolved_at`.
+- **Transactional Aggregate Refund Limit Validation:**
+  - A row-level CHECK constraint cannot validate aggregate balances across multiple refund rows.
+  - Creating a refund obligation executes inside a transaction acquiring a pessimistic row lock (`SELECT id, amount_satisfied FROM rental_payment_demands WHERE id = :demandId FOR UPDATE`).
+  - Sums all active refunds (`refund_status != 'CANCELLED'`). Canceled refund records do not decrement the pool.
+  - Rejects any refund request where `refund_amount > (gross_refundable_pool - cumulative_active_refunds)`. Concurrent refund attempts queue safely behind the row lock.
+- **Booking Confirmation Invariant & Late Payment Recovery:**
+  - A booking can ONLY be confirmed when: (1) exclusive vehicle lock is held; (2) demands are `SATISFIED` through verified submissions (or partner pay-at-pickup is explicitly approved); (3) required security deposit policy is satisfied; and (4) the booking hold is still valid or safely revalidated under vehicle lock.
+  - An expired hold is **NEVER** silently confirmed or reopened.
+  - **Late Payment Recovery Flow:** When an external payment arrives after hold/demand TTL expiration:
+    1. Partner confirms external payment arrival.
+    2. System marks the submission as `VERIFIED` with an audit trail, keeping the original hold and demand immutable in `EXPIRED`.
+    3. System checks vehicle availability under `SELECT ... FOR UPDATE`.
+    4. If available: Creates a fresh hold (`recovered_from_hold_id = original_hold.id`) and fresh demand; applies verified funds; revalidates booking conditions; confirms booking.
+    5. If unavailable: Creates a `rental_fee_refunds` obligation (`refund_reason = 'EXPIRED_HOLD_EXCEPTION'`) for direct external partner refund.
 - **Verification Window & Inventory Protection:** Customer submission transitions the hold to `VERIFICATION_PENDING` and extends the lock TTL by a configurable window (e.g. 60 minutes). If the partner fails to act within the window, the hold expires to prevent indefinite inventory locking.
 - **Refundable Deposit Custody:** Security deposits are tracked as a **refundable customer liability in partner custody**, never as platform revenue, taxable turnover, or escrow.
 - **Damage Claim Dispute Protection:**

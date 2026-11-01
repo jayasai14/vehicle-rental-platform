@@ -95,6 +95,7 @@ erDiagram
     vehicles ||--o{ booking_holds : "locks_interval"
     users ||--o{ booking_holds : "held_by_customer"
     booking_holds ||--o| bookings : "converts_to"
+    booking_holds ||--o{ booking_holds : "recovers_from (recovered_from_hold_id)"
 
     vehicles ||--o{ bookings : "reserves"
     users ||--o{ bookings : "rents_as_customer"
@@ -130,7 +131,8 @@ erDiagram
     partner_profiles ||--o{ rental_fee_refunds : "refunded_by_partner"
     users ||--o{ rental_fee_refunds : "refunded_to_customer"
     users ||--o{ rental_fee_refunds : "recorded_by"
-    users ||--o{ rental_fee_refunds : "admin_arbitration"
+    support_tickets ||--o{ rental_fee_refunds : "arbitrates_case (dispute_ticket_id)"
+    users ||--o{ rental_fee_refunds : "resolved_by_admin"
 
     bookings ||--|| security_deposits : "secured_by"
     partner_profiles ||--o{ security_deposits : "held_by_partner"
@@ -138,12 +140,15 @@ erDiagram
     security_deposits ||--o{ deposit_deductions : "claims"
     incidents ||--o{ deposit_deductions : "causes"
     users ||--o{ deposit_deductions : "proposed_by"
+    support_tickets ||--o{ deposit_deductions : "arbitrates_dispute (dispute_ticket_id)"
     users ||--o{ deposit_deductions : "resolved_by_admin"
 
     security_deposits ||--o{ security_deposit_refunds : "releases_via"
     bookings ||--o{ security_deposit_refunds : "booking_deposit_refund"
     partner_profiles ||--o{ security_deposit_refunds : "refunded_by_partner"
     users ||--o{ security_deposit_refunds : "refunded_to_customer"
+    support_tickets ||--o{ security_deposit_refunds : "arbitrates_case (dispute_ticket_id)"
+    users ||--o{ security_deposit_refunds : "resolved_by_admin"
 
     bookings ||--o| contributor_payables : "obligates_partner"
     contribution_agreements ||--o{ contributor_payables : "terms_set_by"
@@ -198,7 +203,7 @@ erDiagram
 | 23| `contribution_agreements`| `vehicles`, `users`, `partner_profiles` | `contribution_agreement_events`, `vehicle_withdrawal_requests`, `contributor_payables` | N-to-1 (`RESTRICT`) |
 | 24| `contribution_agreement_events`| `contribution_agreements`, `users` | None | N-to-1 (`CASCADE` on agreement) |
 | 25| `vehicle_withdrawal_requests`| `vehicles`, `contribution_agreements`, `users` | None | N-to-1 (`RESTRICT`) |
-| 26| `booking_holds` | `vehicles`, `users` | `bookings` (optional convert link), `rental_payment_demands`, `rental_payment_submissions`, `rental_fee_refunds` | N-to-1 (`RESTRICT`) |
+| 26| `booking_holds` | `vehicles`, `users`, `booking_holds` (null, `recovered_from_hold_id`) | `booking_holds` (recovery child), `bookings` (optional convert link), `rental_payment_demands`, `rental_payment_submissions`, `rental_fee_refunds` | N-to-1 (`RESTRICT`, `recovered_from_hold_id` on delete set null) |
 | 27| `bookings` | `vehicles`, `booking_holds` (null), `users`, `partner_profiles`, `pickup_locations` | `booking_status_events`, `booking_extensions`, `inspections`, `incidents`, `rental_fee_refunds`, `security_deposits`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposit_refunds`, `contributor_payables`, `reviews`, `support_tickets` | N-to-1 (`RESTRICT`) |
 | 28| `booking_status_events`| `bookings`, `users` (null) | None | N-to-1 (`CASCADE` on booking) |
 | 29| `booking_extensions`| `bookings`, `users` (null) | None | N-to-1 (`RESTRICT`) |
@@ -208,14 +213,14 @@ erDiagram
 | 33| `partner_payment_profiles` | `partner_profiles` | None | 1-to-1 with `partner_profiles` (`CASCADE`) |
 | 34| `rental_payment_demands` | `booking_holds` (null), `bookings` (null), `partner_profiles`, `users` | `rental_payment_submissions`, `rental_fee_refunds` | N-to-1 (`RESTRICT`) |
 | 35| `rental_payment_submissions`| `rental_payment_demands`, `booking_holds` (null), `bookings` (null), `users`, `partner_profiles` | None | N-to-1 (`RESTRICT`) |
-| 36| `rental_fee_refunds` | `bookings` (null), `rental_payment_demands` (null), `booking_holds` (null), `partner_profiles`, `users` (customer), `users` (recorded_by), `users` (admin, null) | None | N-to-1 (`RESTRICT` on all explicit foreign keys) |
+| 36| `rental_fee_refunds` | `bookings` (null), `rental_payment_demands` (null), `booking_holds` (null), `partner_profiles`, `users` (customer), `users` (recorded_by), `support_tickets` (null, `dispute_ticket_id`), `users` (null, `resolved_by_admin_user_id`) | None | N-to-1 (`RESTRICT` on core, `SET NULL` on arbitration) |
 | 37| `security_deposits`| `bookings`, `partner_profiles`, `users` | `deposit_deductions`, `security_deposit_refunds` | 1-to-1 with `bookings` (`RESTRICT`) |
-| 38| `deposit_deductions`| `security_deposits`, `incidents` (null), `users` (null) | None | N-to-1 (`RESTRICT`) |
-| 39| `security_deposit_refunds` | `security_deposits`, `bookings`, `partner_profiles`, `users` | None | N-to-1 (`RESTRICT`) |
+| 38| `deposit_deductions`| `security_deposits`, `incidents` (null), `users` (proposed_by), `support_tickets` (null, `dispute_ticket_id`), `users` (null, `resolved_by_admin_user_id`) | None | N-to-1 (`RESTRICT` on deposit, `SET NULL` on arbitration) |
+| 39| `security_deposit_refunds` | `security_deposits`, `bookings`, `partner_profiles`, `users` (customer), `support_tickets` (null, `dispute_ticket_id`), `users` (null, `resolved_by_admin_user_id`) | None | N-to-1 (`RESTRICT` on deposit/booking, `SET NULL` on arbitration) |
 | 40| `contributor_payables`| `bookings`, `contribution_agreements`, `users`, `partner_profiles` | None | 1-to-1 with `bookings` (`RESTRICT`) |
 | 41| `outbox_events` | Typed aggregate references (`bookings`, `demands`, `submissions`) | None | Append-only integration queue (Zero FKs) |
 | 42| `reviews` | `bookings`, `users`, `vehicles`, `partner_profiles` | None | 1-to-1 with `bookings` (`RESTRICT`) |
-| 43| `support_tickets`| `users`, `bookings` (null), `vehicles` (null), `users` (admin) | `support_ticket_messages` | N-to-1 (`RESTRICT`) |
+| 43| `support_tickets`| `users`, `bookings` (null), `vehicles` (null), `users` (admin) | `support_ticket_messages`, `rental_fee_refunds`, `deposit_deductions`, `security_deposit_refunds` | N-to-1 (`RESTRICT` on users, `SET NULL` on disputes) |
 | 44| `support_ticket_messages`| `support_tickets`, `users` | None | N-to-1 (`CASCADE` on ticket) |
 | 45| `notifications` | `users` | None | N-to-1 (`CASCADE` on user) |
 | 46| `audit_logs` | `users` (actor, null) | None | Append-only security audit log |
