@@ -1,108 +1,121 @@
 # Page and Route Inventory
 
-Routes below are proposed. Final naming can be adjusted before implementation, but route ownership and access requirements must remain explicit.
+**Project:** Vehicle Rental Platform  
+**Market:** Vijayawada, Andhra Pradesh  
+**Status:** Database Design Freeze Candidate Baseline (Partner-Direct Payment Model)  
 
-## Public
+Routes below are proposed for the React + Vite frontend application. Final naming can be adjusted before implementation, but route ownership and access requirements must remain explicit.
+
+---
+
+## 1. Public
 
 | Route | Page | Access |
 |---|---|---|
-| / | Landing page | Public |
-| /vehicles | Explore vehicles/search results | Public |
-| /vehicles/:vehicleId | Vehicle details | Public |
-| /how-it-works | How the platform works | Public |
-| /earn-with-your-vehicle | Contributor information/onboarding | Public |
-| /about | About | Public |
-| /help | Help/FAQ/contact | Public |
-| /terms | Terms | Public |
-| /privacy | Privacy policy | Public |
-| /login | Unified login | Public |
-| /register/customer | Customer registration | Public |
-| /register/partner | Partner application | Public |
-| /forgot-password | Password recovery | Public |
-| /verify-email | Email/OTP verification | Public |
+| `/` | Landing page | Public |
+| `/vehicles` | Explore vehicles / search results | Public |
+| `/vehicles/:vehicleId` | Vehicle details & availability | Public |
+| `/how-it-works` | How the platform works | Public |
+| `/earn-with-your-vehicle` | Contributor information & onboarding | Public |
+| `/about` | About the platform | Public |
+| `/help` | Help / FAQ / Contact | Public |
+| `/terms` | Terms of service | Public |
+| `/privacy` | Privacy policy | Public |
+| `/login` | Unified login | Public |
+| `/register/customer` | Customer registration | Public |
+| `/register/partner` | Partner application | Public |
+| `/forgot-password` | Password recovery | Public |
+| `/verify-email` | Email OTP verification | Public |
 
-ADMIN must never be selectable through public registration.
+*ADMIN must never be selectable through public registration.*
 
-## Customer
+---
 
-| Route | Page |
-|---|---|
-| /customer | Customer dashboard |
-| /customer/bookings | Booking history |
-| /customer/bookings/:bookingId | Booking details |
-| /customer/profile | Profile and contact details |
-| /customer/verification | Identity/licence verification |
-| /customer/favorites | Saved vehicles (optional) |
-| /customer/reviews | My reviews |
-| /customer/support | Support requests |
+## 2. Customer
 
-## Booking flow (authenticated customer)
+| Route | Page | Notes |
+|---|---|---|
+| `/customer` | Customer dashboard | Recent activity, upcoming rentals |
+| `/customer/bookings` | Booking history | Filter by status (`CONFIRMED`, `IN_PROGRESS`, `COMPLETED`, `CANCELLED`) |
+| `/customer/bookings/:bookingId` | Booking details | Rental contract, vehicle details, partner contact, inspection reports |
+| `/customer/bookings/:bookingId/deposit` | Security deposit tracking | Held balance, proposed deductions, refund status, dispute button |
+| `/customer/profile` | Profile & emergency contacts | Personal details, phone verification |
+| `/customer/verification` | Identity & driving licence | OKYC Aadhaar / driving licence upload |
+| `/customer/reviews` | My reviews | Submitted vehicle reviews |
+| `/customer/support` | Support requests | Open support/dispute tickets |
 
-| Route | Page |
-|---|---|
-| /checkout/:vehicleId | Rental dates, location and booking summary |
-| /checkout/:vehicleId/verification | Identity/licence completion |
-| /checkout/:vehicleId/review | Price, terms, deposit and cancellation review |
-| /checkout/:vehicleId/payment | Payment |
-| /booking-confirmation/:bookingId | Confirmation |
-| /bookings/:bookingId/extension | Request extension |
+---
 
-Use server-side booking holds and quote validation. Never depend on frontend step order for security or price integrity.
+## 3. Booking Flow (Authenticated Customer)
 
-## Vehicle contributor
+| Route | Page | Notes |
+|---|---|---|
+| `/checkout/:vehicleId` | Date/time, hub pickup / doorstep selection, price quote | Server acquires 15-minute temporary reservation lock (`booking_holds`) |
+| `/checkout/:vehicleId/verification` | Identity & driving licence validation | Required prior to payment instruction display |
+| `/checkout/:vehicleId/review` | Rental amount, deposit, and terms review | Displays exact rental charge, security deposit, and partner terms |
+| `/checkout/:vehicleId/payment-instructions` | Partner direct payment instructions | Displays managing partner's UPI QR code, UPI ID, payment link, amount due, and hold expiration countdown |
+| `/checkout/:vehicleId/submit-payment` | Payment reference submission form | Customer inputs payment method, Bank UTR number, amount, time, and optional receipt screenshot |
+| `/checkout/:vehicleId/verification-pending` | Verification pending screen | Hold status `VERIFICATION_PENDING`; displays verification countdown timer (e.g. 60m) while partner checks bank records |
+| `/booking-confirmation/:bookingId` | Booking confirmed page | Displayed once managing partner verifies payment (or for authorized pay-at-pickup) |
+| `/bookings/:bookingId/extension` | Request rental extension | Extension demand generation |
 
-| Route | Page |
-|---|---|
-| /contributor | Contributor dashboard |
-| /contributor/vehicles/new | Submit vehicle |
-| /contributor/vehicles | Submitted/active vehicles |
-| /contributor/vehicles/:vehicleId | Application and vehicle status |
-| /contributor/agreements | Agreements and terms |
-| /contributor/earnings | Earnings/payables |
-| /contributor/settlements | Payment history |
-| /contributor/availability | Availability and withdrawal requests |
+*Use server-side booking holds and quote validation. Never depend on frontend step order for security or price integrity. Customer upload NEVER auto-confirms booking.*
 
-## Rental partner
+---
 
-| Route | Page |
-|---|---|
-| /partner | Partner dashboard |
-| /partner/profile | Business profile and verification |
-| /partner/vehicles | Partner-managed inventory |
-| /partner/vehicles/new | Add partner-owned vehicle |
-| /partner/vehicles/:vehicleId | Manage vehicle/listing |
-| /partner/contributions | Contributor applications |
-| /partner/contributions/:applicationId | Review application and propose terms |
-| /partner/agreements | Active/expired agreements |
-| /partner/bookings | Booking management |
-| /partner/bookings/:bookingId | Booking and customer details |
-| /partner/inspections | Handover/return inspections |
-| /partner/earnings | Partner revenue/commission |
-| /partner/contributor-payables | Contributor payable/settlement workflow |
+## 4. Vehicle Contributor
 
-## Admin
+| Route | Page | Notes |
+|---|---|---|
+| `/contributor` | Contributor dashboard | Fleet overview, active rentals, monthly earnings |
+| `/contributor/vehicles/new` | Submit vehicle for onboarding | Vehicle specs, RC upload, preferred partner selection |
+| `/contributor/vehicles` | Submitted & active vehicles | List of contributor-owned vehicles |
+| `/contributor/vehicles/:vehicleId` | Application & vehicle status | Approval status, current custodian (`CONTRIBUTOR_CUSTODY` / `PARTNER_CUSTODY`) |
+| `/contributor/agreements` | Bilateral contribution agreements | View signed terms, fixed fee per booking, cancellation terms |
+| `/contributor/earnings` | Earnings & payables dashboard | Track fixed compensation per eligible completed booking |
+| `/contributor/settlements` | Direct settlement records | History of partner direct transfers, Bank UTRs, dates, and acknowledge/dispute actions |
+| `/contributor/availability` | Availability & withdrawal requests | Schedule personal blackout blocks or initiate 7-day vehicle withdrawal |
 
-| Route | Page |
-|---|---|
-| /admin | Platform dashboard |
-| /admin/users | User and role management |
-| /admin/partners | Partner applications and verification |
-| /admin/vehicles | Vehicle verification and listing moderation |
-| /admin/contributions | Contribution and agreement oversight |
-| /admin/bookings | Booking oversight |
-| /admin/payments | Payments, deposits and refunds |
-| /admin/payouts | Partner/contributor settlement oversight |
-| /admin/commissions | Commission configuration |
-| /admin/disputes | Complaints, damage claims and incidents |
-| /admin/reviews | Review moderation |
-| /admin/reports | Operational and financial reports |
-| /admin/settings | Policies, cancellation, deposits and platform settings |
-| /admin/audit | Sensitive action/audit log |
+---
 
-## Navigation principles
+## 5. Rental Partner (Verified Partners Only)
 
-- Separate layouts and navigation for public, customer, partner, contributor and admin portals.
-- A user with multiple roles can switch between available workspaces without creating another account.
-- Hide inaccessible navigation items for usability, but enforce all access on backend endpoints.
-- Add loading, empty, error, forbidden and not-found states for every data-driven page.
-- Do not create separate pages where a coherent tab/detail view is clearer.
+| Route | Page | Notes |
+|---|---|---|
+| `/partner` | Partner dashboard | Fleet utilization, pending verifications, active rentals |
+| `/partner/profile` | Business profile & verification | Legal business name, GSTIN, PAN, trade licence documents |
+| `/partner/payment-profile` | Direct payment configuration | Set public payee name, UPI ID, upload UPI QR image, external payment link, toggle cash-at-pickup |
+| `/partner/payment-verification` | Inward payment verification queue | Review pending customer submissions (`SUBMITTED_FOR_VERIFICATION`), inspect UTR/proof, click "Verify" or "Reject" |
+| `/partner/vehicles` | Partner-managed inventory | Both partner-owned and accepted contributor-owned vehicles |
+| `/partner/vehicles/new` | Register partner-owned vehicle | Add new vehicle to fleet |
+| `/partner/vehicles/:vehicleId` | Manage listing & pricing | Rates, turnaround buffer, listing status (published/paused) |
+| `/partner/hubs` | Service hubs & depots | Manage physical operating locations and pickup points |
+| `/partner/contributions` | Incoming contributor applications | Review vehicle specs and documents |
+| `/partner/contributions/:applicationId` | Review & propose agreement | Set fixed fee per booking, notice period, and handover terms |
+| `/partner/agreements` | Active contributor agreements | Contractual agreement management |
+| `/partner/bookings` | Booking management | Active, upcoming, overdue, and completed rentals |
+| `/partner/bookings/:bookingId` | Booking details & fulfillment | Customer contact, pickup/return checklists, payment records |
+| `/partner/inspections` | Inspection records | Pre-rental handover and post-rental return photo logs |
+| `/partner/deposits` | Security deposit management | Track deposits held, propose damage deductions, record direct refunds with UTR |
+| `/partner/contributor-payables` | Contributor settlement workflow | Schedule and record direct bank transfers (NEFT/IMPS/UPI) to contributors with UTR and receipt upload |
+| `/partner/financials` | Financial record-keeping | Overview of direct rental proceeds received and contributor settlements recorded |
+
+---
+
+## 6. Admin
+
+| Route | Page | Notes |
+|---|---|---|
+| `/admin` | Platform operational dashboard | Marketplace metrics, active rentals, platform health |
+| `/admin/users` | User & role management | Manage user accounts, role revocations |
+| `/admin/partners` | Partner verification queue | Review commercial documents, approve or reject partner onboarding |
+| `/admin/vehicles` | Vehicle verification | Audit RC, commercial permits, insurance documents before listing activation |
+| `/admin/contributions` | Contribution agreement oversight | Monitor bilateral partner-contributor agreements |
+| `/admin/bookings` | Master booking oversight | Global booking audit and operational monitoring |
+| `/admin/payment-submissions` | Payment submissions & audit | Audit trail of customer payment submissions and partner verifications |
+| `/admin/deposits` | Deposit & refund monitoring | Oversee deposit liabilities held by partners and refund compliance |
+| `/admin/disputes` | Dispute arbitration queue | Arbitrate contested damage deductions and deposit refund disputes |
+| `/admin/reviews` | Review moderation | Moderate flagged customer reviews |
+| `/admin/reports` | Operational analytics | Fleet utilization, turnaround times, regional metrics |
+| `/admin/settings` | Platform policy configuration | Configure default hold TTL, turnaround buffers, verification windows |
+| `/admin/audit` | Security audit trail | Query immutable `audit_logs` by user, entity, and correlation ID |

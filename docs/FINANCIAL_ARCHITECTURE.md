@@ -1,386 +1,185 @@
-# Financial Architecture & Double-Entry Ledger Specification
+# Financial & Operational Record-Keeping Architecture (Partner-Direct Payment Model)
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh  
-**Status:** Final Pre-Freeze Baseline (Approved 54-Table Architecture)  
-**Governing Principle:** **The platform is never the legal debtor for contributor compensation.** The vehicle contributor receives an agreed fixed compensation per eligible completed booking directly under a commercial contract with the rental partner. Direct payments by partners to contributors must never be represented as cash movements through the platform general ledger, because the platform never receives, holds, or transfers those funds.
+**Status:** Database Design Freeze Candidate Baseline (Partner-Direct Model)  
+**Governing Principle:** **The platform collects, holds, escrows, splits, and transfers ZERO customer rental money in the MVP.** The rental partner who manages a vehicle is the customer-facing rental service provider and direct payee for all bookings on that vehicle. The platform functions strictly as a digital marketplace, booking workflow engine, and operational record-keeper.
 
 ---
 
-## 1. Separation of Financial Models: Platform GL vs. Partner Obligations
+## 1. Architectural & Legal Responsibility Demarcation
 
-To ensure legal, regulatory, and accounting integrity, the platform strictly separates three distinct financial domains:
+To eliminate legal, tax, and regulatory ambiguity, the platform clearly defines the operational roles and legal responsibilities of the parties:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                              MARKETPLACE FINANCIAL SEPARATION                          │
+│                        PARTNER-DIRECT PAYMENT ARCHITECTURE (MVP)                       │
 │                                                                                        │
-│  1. PLATFORM GENERAL LEDGER                                                            │
-│     [Customer] ──(Rental + Deposit)──> [Platform Gateway Clearing]                     │
-│                                                      │                                 │
-│                        ┌─────────────────────────────┴────────────────────────────┐    │
-│                        ▼                                                          ▼    │
-│            [Platform Commission]                                          [Partner Net]│
-│            (Gross Platform Revenue)                                        (Platform   │
-│                                                                             Liability) │
+│  1. CUSTOMER RENTAL CHECKOUT (Direct Payment)                                         │
+│     [Customer] ────(UPI QR / UPI ID / Payment Link / Cash)────> [Rental Partner]        │
+│          │                                                             │               │
+│          ▼ (Submits Bank UTR / Receipt)                                ▼ (Verifies)    │
+│     [Platform: rental_payment_submissions] ─────────────────────> [Booking CONFIRMED]   │
 │                                                                                        │
 │ ────────────────────────────────────────────────────────────────────────────────────── │
-│  2. PARTNER-CONTRIBUTOR OBLIGATION TRACKING (contributor_payables)                     │
+│  2. SECURITY DEPOSIT CUSTODY & REFUND (Direct Partner Custody)                         │
+│     Deposit Custody: Partner directly collects and holds customer deposit              │
+│     Deductions: Evidence-based damage/fuel claims (Disputes arbitrated by Admin)       │
+│     Refund: Partner directly returns deposit via UPI/Bank outside platform             │
+│     [Platform: security_deposits & security_deposit_refunds] (Tracks proof & status)   │
+│                                                                                        │
+│ ────────────────────────────────────────────────────────────────────────────────────── │
+│  3. CONTRIBUTOR COMPENSATION (Approach A Direct Settlement)                            │
 │     Contractual Debt: Rental Partner ──(Agreed Fixed Fee)──> Contributor                │
-│     (Tracked by platform; NOT a platform cash liability or balance sheet debt)        │
-│                                                                                        │
-│ ────────────────────────────────────────────────────────────────────────────────────── │
-│  3. DIRECT PARTNER SETTLEMENT EVIDENCE (Approach A MVP Baseline)                       │
-│     [Partner Bank Account] ──(Direct NEFT/IMPS/UPI)──> [Contributor Bank Account]      │
-│     Recorded in Platform: UTR Reference Number, Payment Date, Receipt Attachment       │
-│     Verification: Contributor digital acknowledgement or dispute in platform UI        │
+│     Settlement: Partner pays Contributor directly via NEFT/IMPS/UPI outside platform   │
+│     [Platform: contributor_payables] (Tracks obligation, UTR, proof & acknowledgement) │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1.1 The Three Financial Domains Defined:
+### 1.1 Complete Responsibility Demarcation Matrix:
 
-1. **Platform General Ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`):**
-   - Tracks **only** actual platform cash flows, platform revenues, and platform legal liabilities.
-   - Platform cash incoming via payment gateway: `GATEWAY_CLEARING`.
-   - Customer deposits held as a platform liability: `CUSTOMER_REFUNDABLE_LIABILITY`.
-   - Customer rental fees held in transit: `CUSTOMER_RENTAL_CLEARING`.
-   - Platform marketplace commission: `PLATFORM_COMMISSION_REVENUE`.
-   - Net rental proceeds owed by platform to rental partner: `PARTNER_PAYABLE`.
-   - Outward customer refunds in transit: `REFUND_PAYABLE`.
-   - Outward bank disbursements from platform to partner: `SETTLEMENT_CLEARING`.
-2. **Partner-Contributor Contractual Obligation Model (`contributor_payables`):**
-   - Represents the **partner's legal debt to the contributor** under their bilateral commercial agreement.
-   - Stored in a dedicated domain table (`contributor_payables`), **strictly separate from the platform general ledger**.
-   - The platform calculates the payable, tracks eligibility upon completed vehicle return, monitors due dates, and displays the payable in partner and contributor dashboards.
-   - It is **never** credited as a liability of the platform in `ledger_entries`.
-3. **Direct Partner Settlement Evidence (Approach A MVP):**
-   - When the partner pays the contributor directly outside the platform (via bank transfer/UPI), the partner logs the payment reference (Bank UTR number, date, receipt document).
-   - This records the operational discharge of the partner's obligation in `contributor_payables`.
-   - **It generates NO cash movement entries in the platform general ledger**, because platform bank funds are completely untouched.
-
-### 1.2 Customer Payment, Deposit Custody, and Partner Settlement Demarcation
-
-To eliminate legal, regulatory, and tax ambiguity, the marketplace explicitly establishes the operational and legal demarcations for customer checkout and partner payouts:
-
-| Responsibility Domain | Responsible Legal Entity | Architectural & Ledger Manifestation |
-|---|---|---|
-| **Merchant of Record (MoR)** | **Platform Operating Entity** | Acts as the digital marketplace MoR for customer-facing checkout transactions on the web/app. Collects total charges, issues platform facilitation tax invoices, and integrates with RBI-authorized payment aggregators. *(Subject to pending legal validation regarding GST Section 9(5) E-Commerce Operator classification).* |
-| **Customer Payment Recipient** | **Platform Payment Gateway Merchant Account** | Gateway captures customer checkout funds (rental fee + security deposit) into the platform's clearing pipeline (`GATEWAY_CLEARING`). Customer funds are segregated on the ledger into rental clearing and deposit liabilities. |
-| **Security Deposit Holder** | **Platform Operating Entity** | Holds customer security deposits as a **Refundable Balance Sheet Liability** (`CUSTOMER_REFUNDABLE_LIABILITY`). Deposits are never treated as platform revenue, working capital, or an unregulated private "escrow". |
-| **Customer Refund Responsibility** | **Platform Operating Entity** | Bears sole operational and contractual responsibility for processing customer refunds (cancellations, clean return deposit releases, dispute adjustments, or late hold collision refunds) directly to the original payment instrument via payment gateway refund APIs (`REFUND_PAYABLE`). Partners never refund customers directly. |
-| **Partner Rental Settlement** | **Platform Operating Entity** | Contractually obligated to disburse net rental proceeds (`PARTNER_PAYABLE`) to verified partners on a scheduled batch cycle (e.g. T+2 post return) via payout gateway disbursement APIs (`SETTLEMENT_CLEARING`). Net proceeds equal gross rental subtotal minus platform commission, applicable gateway fees, partner-funded discounts, and mandated tax withholdings (TDS/TCS). |
-| **Payment Provider Responsibilities** | **Payment Aggregator / Gateway Partner** | PCI-DSS compliant payment card handling, UPI intent/collect flows, fraud checks, instant webhook callbacks, automated refund execution, and scheduled bank settlement into platform clearing accounts per RBI Payment Aggregator guidelines. |
+| Operational Domain | Responsible Business Entity | Real-World Money Movement | Architectural & Platform Manifestation |
+|---|---|---|---|
+| **Rental Service Provider** | **Rental Partner** | Furnishes the vehicle, handles physical custody, inspects vehicle condition. | Partner profile verified by Admin; partner legally contracts rental service to customer. |
+| **Customer Rental Payee** | **Rental Partner** | Customer transfers rental fee directly to partner's UPI QR, UPI ID, payment link, or cash at pickup. | Platform displays partner's payment profile; issues `rental_payment_demands`; captures customer `rental_payment_submissions`; partner verifies credit. Zero platform cash handling. |
+| **Security Deposit Custodian** | **Rental Partner** | Partner receives and holds security deposit directly in partner's bank/UPI account or cash. | Tracked in `security_deposits` as partner-held customer liability. Platform records expected deposit, collected amount, and UTR. Platform does NOT hold escrow. |
+| **Customer Refund Execution** | **Rental Partner** | Partner executes external bank transfer/UPI back to customer for cancellations or deposit release. | Platform records refund obligations, partner UTR proof, and customer confirmations in `security_deposit_refunds`. Platform never triggers gateway transfers. |
+| **Payment Verification Gate** | **Rental Partner** | Partner independently inspects bank account/UPI app statements for inward credit. | **Strict Invariant:** ONLY partner verification marks payment as verified. Customer screenshot/UTR never auto-confirms payment. |
+| **Contributor Compensation Debtor** | **Rental Partner** | Partner pays contributor agreed fixed compensation directly outside platform via NEFT/IMPS/UPI. | Obligation tracked in `contributor_payables`. Single lump-sum model per completed booking. Platform never disburses contributor funds. |
+| **Dispute Arbitration** | **Platform Admin** | Evaluates inspection photos, damage claims, and payment receipts if parties disagree. | Support tickets, incident mediation, and deduction approval workflows (`deposit_deductions`). |
+| **Platform Monetization** | **Platform Operating Entity** | Separate commercial model (e.g., partner subscriptions or listing fees). | **Zero deductions from customer rental payments.** No commission splitting in MVP. |
 
 > [!IMPORTANT]
-> **Method-Independent Gateway Architecture:** Payment provider integrations are abstracted behind vendor-agnostic service contracts (`PaymentGatewayClient`, `PayoutGatewayClient`). The database schema, state machines, and double-entry ledger remain decoupled from any single proprietary gateway mechanism.
-> 
-> **Separation from Approach A:** Direct partner-to-contributor settlement under Approach A applies **strictly and exclusively** to the private bilateral commercial contract between the Rental Partner and the Vehicle Contributor. **Approach A does NOT apply to, nor does it establish regulatory compliance for, the separate customer payment collection and partner rental settlement flow.** Customer checkout and partner payout compliance is established independently under marketplace facilitator regulations and commercial contracts.
+> **No Merchant of Record Claim:** The platform is **not** the Merchant of Record collecting customer rental money in the MVP. The partner-as-service-provider and partner-as-payee model is an architectural decision that eliminates platform custody risks and regulatory payment aggregator overhead, subject to formal legal, tax, and insurance validation before launch.
 
 ---
 
-## 2. Normalized Double-Entry Database Ledger Structure (54-Table Design)
+## 2. Retained MVP Financial & Operational Tables (Module 7: 7 Tables)
 
-The platform general ledger uses an immutable, append-only, fully normalized double-entry database design comprising **three physical tables**:
+Every retained financial table in Module 7 records real-world obligations, submissions, and evidence without representing external transfers as platform cash:
 
-### 2.1 `ledger_accounts` (Chart of Accounts Master)
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Important Columns:**
-  - `account_code` (VARCHAR 40, UNIQUE): Unique identifier for the account (e.g. `GATEWAY_CLEARING`).
-  - `account_name` (VARCHAR 100): Human-readable name.
-  - `account_category` (ENUM: `ASSET`, `LIABILITY`, `EQUITY`, `REVENUE`, `EXPENSE`).
-  - `normal_balance` (ENUM: `DEBIT`, `CREDIT`).
-  - `currency` (CHAR(3) DEFAULT 'INR').
-  - `is_active` (BOOLEAN DEFAULT TRUE).
-  - `created_at` (DATETIME).
-- **Constraints:** `uk_ledger_accounts_code` (`account_code`).
+### 2.1 `partner_payment_profiles`
+- **What it Records:** Managing partner's direct payment receiving configuration: public payee name, UPI ID (VPA), Cloudinary object key for UPI QR image, external payment URL, accepted payment methods JSON, and whether pay-at-pickup is enabled.
+- **Who Moves Money:** Customer transfers money to these partner coordinates.
+- **Responsible Entity:** Rental Partner (responsible for accuracy of payment coordinates).
+- **Security Control:** NEVER stores sensitive bank credentials, UPI PINs, or OTPs. QR images and payment evidence are protected by secure access controls.
 
-### 2.2 `ledger_transactions` (Journal Transaction Headers)
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Important Columns:**
-  - `transaction_group_id` (VARCHAR 64, UNIQUE): Unique correlation identifier grouping balancing entries (e.g. `TXG-CHK-1001`).
-  - `reference_type` (ENUM: `BOOKING`, `PAYMENT_ORDER`, `SECURITY_DEPOSIT`, `REFUND`, `PARTNER_SETTLEMENT`, `REVERSAL_ADJUSTMENT`).
-  - `reference_id` (BIGINT UNSIGNED): Foreign key ID of the underlying operational entity.
-  - `narrative` (VARCHAR 255): Descriptive context for the accounting entry.
-  - `posted_at` (DATETIME): Accounting effective timestamp.
-  - `created_at` (DATETIME): Immutable record creation timestamp.
-- **Constraints:** `uk_ledger_tx_group` (`transaction_group_id`).
-- **Indexes:** `idx_ledger_tx_ref` (`reference_type`, `reference_id`), `idx_ledger_tx_posted` (`posted_at`).
+### 2.2 `rental_payment_demands`
+- **What it Records:** The explicit payment obligation demanded for a booking hold, booking extension, or damage invoice (e.g., "Pay ₹2,400 to Partner X for Hold Y").
+- **Who Moves Money:** Generated by the platform system upon customer checkout initiation; settled by customer direct payment.
+- **Responsible Entity:** Platform generates demand based on vehicle pricing and deposit rules; Partner receives funds.
 
-### 2.3 `ledger_entries` (Journal Transaction Line Items)
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:**
-  - `transaction_id` $\rightarrow$ `ledger_transactions.id` (`ON DELETE RESTRICT`)
-  - `account_id` $\rightarrow$ `ledger_accounts.id` (`ON DELETE RESTRICT`)
-- **Important Columns:**
-  - `sequence_number` (SMALLINT UNSIGNED): 1-indexed line number within transaction.
-  - `debit_amount` (DECIMAL(12,2) DEFAULT 0.00): Must be $\ge 0.00$.
-  - `credit_amount` (DECIMAL(12,2) DEFAULT 0.00): Must be $\ge 0.00$.
-  - `created_at` (DATETIME).
-- **Check Constraints:** `chk_ledger_entry_amounts` (`debit_amount >= 0.00 AND credit_amount >= 0.00 AND (debit_amount > 0.00 OR credit_amount > 0.00)`).
-- **Indexes:** `idx_ledger_entries_account` (`account_id`, `created_at`), `idx_ledger_entries_tx` (`transaction_id`).
+### 2.3 `rental_payment_submissions`
+- **What it Records:** Customer-submitted evidence of payment: payment method used (`UPI_QR`, `UPI_ID`, `EXTERNAL_LINK`, `CASH_AT_PICKUP`), transaction reference (Bank UTR / Cash receipt), exact amount transferred, transaction timestamp, receipt image key, and status (`SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`).
+- **Who Moves Money:** Customer moves money directly to partner outside platform.
+- **Responsible Entity:** Customer submits proof; Managing Partner verifies or rejects.
+- **Duplicate Prevention:** Unique constraint `uk_submissions_partner_ref` (`manager_partner_id`, `transaction_reference`) prevents recycling references across bookings.
 
-### 2.4 Journal Balancing Invariant Rule:
-Every transaction header must have at least two entries whose sums strictly balance:
-$$\sum_{i=1}^{n} \text{ledger\_entries.debit\_amount} = \sum_{i=1}^{n} \text{ledger\_entries.credit\_amount}$$
-Balances are derived projections. Mutable balance columns are strictly forbidden. Corrections are executed **exclusively via offsetting reversal entries**.
+### 2.4 `security_deposits`
+- **What it Records:** Tracking of customer security deposits held directly by the rental partner: required amount, collected amount, collection method, collection reference (UTR), held amount, deducted amount, refunded amount, and lifecycle status.
+- **Who Moves Money:** Customer deposits with partner; partner holds funds.
+- **Responsible Entity:** Rental Partner is the legal and physical custodian.
+
+### 2.5 `deposit_deductions`
+- **What it Records:** Itemized damage, fuel deficit, late return, or traffic fine claims against a security deposit, with mandatory inspection evidence and status (`PROPOSED`, `DISPUTED`, `APPROVED_BY_ADMIN`, `AGREED_BY_CUSTOMER`, `CANCELLED`).
+- **Who Moves Money:** Executed via deposit retention by partner; no cash moves if settled from deposit.
+- **Responsible Entity:** Rental Partner proposes; Customer agrees or disputes; Admin arbitrates unresolved claims.
+
+### 2.6 `security_deposit_refunds`
+- **What it Records:** Audit trail of deposit refunds executed directly by the partner: refund amount, refund method, transaction reference (Bank UTR), proof document, refund timestamp, customer confirmation, and dispute notes.
+- **Who Moves Money:** Rental Partner transfers funds directly to customer bank/UPI outside the platform.
+- **Responsible Entity:** Rental Partner executes refund; Platform monitors and audits.
+
+### 2.7 `contributor_payables`
+- **What it Records:** Partner's contractual obligation to pay the vehicle contributor a fixed agreed amount per completed booking under their bilateral contribution agreement. Tracks payable status, Bank UTR reference, proof attachment, partner settlement date, and contributor digital acknowledgement.
+- **Who Moves Money:** Rental Partner pays Contributor directly outside the platform via NEFT/IMPS/UPI.
+- **Responsible Entity:** Rental Partner is the sole legal debtor; Contributor is the payee.
 
 ---
 
-## 3. Platform Chart of Accounts (Master Records in `ledger_accounts`)
+## 3. Contributor Compensation Model (Approach A Direct Partner Settlement)
 
-| Account Code | Category | Normal Balance | Description & Legal Ownership |
-|---|---|---|---|
-| `GATEWAY_CLEARING` | Asset | Debit | Funds captured by payment gateway awaiting bank settlement to platform bank account. |
-| `CUSTOMER_REFUNDABLE_LIABILITY` | Liability | Credit | Customer security deposits held by the platform as refundable liabilities. (Never platform revenue or escrow). |
-| `CUSTOMER_RENTAL_CLEARING` | Liability | Credit | Unearned customer rental payments held in transit awaiting booking confirmation. |
-| `PLATFORM_COMMISSION_REVENUE` | Revenue | Credit | Earned marketplace commission recognized upon booking confirmation. |
-| `PARTNER_PAYABLE` | Liability | Credit | Net rental proceeds owed by platform to rental partner after platform commission. |
-| `PARTNER_RECEIVABLE` | Asset | Debit | Amounts owed by rental partners to the platform arising from post-payout reversals, disputed damage claim clawbacks, overpayments, or unpaid operational penalties. |
-| `REFUND_PAYABLE` | Liability | Credit | Outward customer refunds approved and queued for payment gateway execution. |
-| `SETTLEMENT_CLEARING` | Asset / Clearing | Debit | Outgoing disbursement funds in transit from platform bank account to partner bank account. |
+The platform preserves the core business model for contributor-owned vehicles:
+
+1. **Bilateral Agreement:** An individual contributor submits a vehicle; a rental partner accepts it under a signed contribution agreement (`contribution_agreements`) specifying an agreed fixed fee per completed booking (e.g., ₹800 per booking).
+2. **Single Lump-Sum Model:** Each eligible completed booking generates exactly one indivisible contributor payable (`contributor_payables`). Partial payments or installment disbursements are prohibited at domain and database levels.
+3. **Operational Completion Trigger:** A payable transitions to `ELIGIBLE` strictly upon physical vehicle return and signed post-rental inspection (`bookings.booking_status = COMPLETED`).
+4. **Direct External Transfer:** The partner transfers the fixed amount directly to the contributor's external bank account or UPI ID.
+5. **Platform Audit Trail:** The partner inputs the Bank UTR number, payment date, and optional transfer receipt into the platform.
+6. **Contributor Confirmation & Dispute:** The contributor confirms receipt in the UI. If funds are not received within 7 days, the contributor can dispute the record, triggering Admin review.
+7. **Zero Platform Cash Entry:** Contributor settlements are **never posted to platform financial accounts** because platform bank accounts are never touched.
 
 ---
 
-## 4. Platform Double-Entry Accounting Journal Scenarios
+## 4. Platform Monetization Independence
 
-### Scenario 1: Initial Customer Checkout Payment
-*Customer pays ₹5,000 Rental Charge + ₹3,000 Security Deposit = ₹8,000 total via Razorpay.*
+1. **No Rental Commission Deductions in MVP:**
+   - The platform does NOT deduct a commission percentage from customer rental payments in the MVP.
+   - All customer rental payments and deposits go 100% directly to the rental partner.
+2. **Independent Future Monetization:**
+   - Platform monetization (e.g. partner monthly software subscription, per-listing fee, or feature placement fee) will be designed as an independent billing flow where the partner pays the platform.
+   - It will never be conflated with customer rental checkout flows.
 
-```text
-Transaction Header: TXG-CHK-1001 | Ref: BOOKING #BK-9021 | Posted: 2026-11-01 10:00:00
-Narrative: Upfront checkout payment captured via Razorpay
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-GATEWAY_CLEARING                 | 8,000.00    | 0.00        | Total customer payment captured
-CUSTOMER_RENTAL_CLEARING         | 0.00        | 5,000.00    | Rental fee held in clearing
-CUSTOMER_REFUNDABLE_LIABILITY    | 0.00        | 3,000.00    | Security deposit held as liability
------------------------------------------------------------------------------------------
-TOTALS                           | 8,000.00    | 8,000.00    | BALANCED
+---
+
+## 5. Security & Audit Requirements for Direct Payments
+
+1. **Partner Authorization Gating:**
+   - A partner can only view and verify payment submissions belonging to vehicles/bookings they manage (`manager_partner_id = :partnerId`).
+   - Partner users cannot view or verify other partners' payment submissions.
+2. **Customer & Contributor Data Isolation:**
+   - Customers can only view their own payment demands, submissions, and deposit refund records.
+   - Contributors can only view their own contribution payables and agreement terms.
+3. **Anti-Fraud Controls:**
+   - **No Auto-Verification:** Customer uploads NEVER automatically verify payments.
+   - **Unique Reference Constraints:** Duplicate UTRs for the same partner are rejected by database unique constraints.
+   - **Verification Audit Trail:** Every verification or rejection records the acting user ID, timestamp, previous status, new status, and reason in `audit_logs`.
+4. **Evidence Storage Security:**
+   - Uploaded UPI QR images, payment receipts, and inspection media are stored in Cloudinary/S3 using secure, non-public object keys accessed via short-lived presigned URLs.
+
+---
+
+## 6. Future-Phase Marketplace Payment Provider Integration
+
+The platform architecture remains strictly provider-agnostic. A clean boundary separates MVP manual collection from future automated marketplace payments:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│               FUTURE-PHASE MARKETPLACE PAYMENT GATEWAY ARCHITECTURE                    │
+│                                                                                        │
+│  [Customer] ────(Online Checkout)────> [Marketplace Payment Provider (e.g. Razorpay)]  │
+│                                                   │                                    │
+│                     ┌─────────────────────────────┴──────────────────────────────┐     │
+│                     ▼                                                            ▼     │
+│        [Split to Partner Linked Account]                           [Platform Commission]│
+│        (Automated Marketplace Transfer)                            (Platform Revenue)  │
+│                                                                                        │
+│  FUTURE-PHASE SCHEMA (8 Tables Activated Upon Provider Onboarding):                   │
+│  1. payment_webhook_events      - Inward gateway webhook idempotency ledger            │
+│  2. partner_commissions         - Automated platform commission calculations           │
+│  3. payout_methods              - Tokenized partner linked bank/UPI accounts           │
+│  4. settlements                 - Outward automated settlement batches                 │
+│  5. ledger_accounts             - Master Chart of Accounts (Platform double-entry)     │
+│  6. ledger_transactions         - Double-entry journal transaction headers             │
+│  7. ledger_entries              - Append-only double-entry journal line items          │
+│  8. platform_commission_rules   - Configurable category/tier commission rules          │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
-### Scenario 2: Booking Confirmation & Commission Recognition
-*Booking confirmed. Platform earns 15% commission (₹750); Net Partner entitlement is ₹4,250.*
-
-```text
-Transaction Header: TXG-CNF-1001 | Ref: BOOKING #BK-9021 | Posted: 2026-11-01 10:00:05
-Narrative: Rental fee earned and net partner entitlement recognized
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-CUSTOMER_RENTAL_CLEARING         | 5,000.00    | 0.00        | Rental clearing earned
-PLATFORM_COMMISSION_REVENUE      | 0.00        | 750.00      | 15% marketplace commission
-PARTNER_PAYABLE                  | 0.00        | 4,250.00    | Net partner rental proceeds owed
------------------------------------------------------------------------------------------
-TOTALS                           | 5,000.00    | 5,000.00    | BALANCED
-```
+### Future Migration Capabilities (Activated Only After Legal/Commercial Gates):
+- Partner linked merchant account onboarding (KYC verification with provider).
+- Online checkout with automated split settlements (e.g., Razorpay Route).
+- Inward payment webhook listeners and signature verification.
+- Automated refund APIs.
+- Platform double-entry general ledger tracking platform commission revenue and settlement clearing.
 
 ---
 
-### Scenario 3: Clean Vehicle Return & 100% Deposit Refund
-*Vehicle returned in pristine condition. Full ₹3,000 security deposit refunded via Razorpay refund API.*
+## 7. Outstanding Validation Gates Before Production
 
-```text
-Transaction Header: TXG-DEP-REF-1001 | Ref: SECURITY_DEPOSIT #DEP-501 | Posted: 2026-11-03 18:00:00
-Narrative: Security deposit released in full to customer
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-CUSTOMER_REFUNDABLE_LIABILITY    | 3,000.00    | 0.00        | Deposit liability extinguished
-REFUND_PAYABLE                   | 0.00        | 3,000.00    | Outward refund queued
------------------------------------------------------------------------------------------
-REFUND_PAYABLE                   | 3,000.00    | 0.00        | Gateway refund executed
-GATEWAY_CLEARING                 | 0.00        | 3,000.00    | Gateway clearing adjusted
------------------------------------------------------------------------------------------
-TOTALS                           | 6,000.00    | 6,000.00    | BALANCED
-```
+Before launching production operations in Vijayawada, the following legal and operational gates must be formally cleared:
 
----
-
-### Scenario 4: Return Inspection with Approved Damage Claim & Partial Deposit Refund
-*Return inspection logs scratch damage: ₹1,000 approved deduction credited to partner. Undisputed ₹2,000 refunded immediately to customer.*
-
-```text
-Transaction Header: TXG-DEP-CLM-1001 | Ref: SECURITY_DEPOSIT #DEP-502 | Posted: 2026-11-03 18:30:00
-Narrative: Approved damage claim credited to partner; residual deposit refunded
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-CUSTOMER_REFUNDABLE_LIABILITY    | 3,000.00    | 0.00        | Deposit liability extinguished
-PARTNER_PAYABLE                  | 0.00        | 1,000.00    | Damage repair funds allocated to partner
-REFUND_PAYABLE                   | 0.00        | 2,000.00    | Residual deposit refund queued
------------------------------------------------------------------------------------------
-REFUND_PAYABLE                   | 2,000.00    | 0.00        | Gateway refund executed
-GATEWAY_CLEARING                 | 0.00        | 2,000.00    | Gateway clearing adjusted
------------------------------------------------------------------------------------------
-TOTALS                           | 5,000.00    | 5,000.00    | BALANCED
-```
-
----
-
-### Scenario 5: Platform Disbursement to Rental Partner
-*Platform disburses net rental proceeds of ₹4,250 to Rental Partner bank account via RazorpayX payout.*
-
-```text
-Transaction Header: TXG-SET-PRT-1001 | Ref: PARTNER_SETTLEMENT #SET-901 | Posted: 2026-11-05 11:00:00
-Narrative: Outward net rental payout disbursed to partner bank account
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-PARTNER_PAYABLE                  | 4,250.00    | 0.00        | Partner liability discharged
-SETTLEMENT_CLEARING              | 0.00        | 4,250.00    | Outgoing platform bank disbursement
------------------------------------------------------------------------------------------
-TOTALS                           | 4,250.00    | 4,250.00    | BALANCED
-```
-
----
-
-### Scenario 6: Financial Correction BEFORE Partner Payout (Intact Partner Payable)
-*An erroneous damage deduction of ₹1,000 credited to a partner is reversed before the partner payout batch runs. The existing `PARTNER_PAYABLE` balance is sufficient to absorb the debit.*
-
-```text
-Transaction Header: TXG-REV-PREPAY-1001 | Ref: REVERSAL_ADJUSTMENT #REV-001 | Posted: 2026-11-04 14:00:00
-Narrative: Pre-payout reversal of erroneous partner damage credit on #DEP-502
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-PARTNER_PAYABLE                  | 1,000.00    | 0.00        | Reversal of unremitted partner credit
-REFUND_PAYABLE                   | 0.00        | 1,000.00    | Reversal credit queued for customer refund
------------------------------------------------------------------------------------------
-REFUND_PAYABLE                   | 1,000.00    | 0.00        | Gateway refund executed to customer
-GATEWAY_CLEARING                 | 0.00        | 1,000.00    | Gateway clearing adjusted
------------------------------------------------------------------------------------------
-TOTALS                           | 2,000.00    | 2,000.00    | BALANCED
-```
-
----
-
-### Scenario 7: Financial Reversal AFTER Partner Payout (Creation of Partner Receivable)
-*A ₹1,000 damage deduction previously credited and already paid out to the partner's external bank account (Scenario 5) is reversed after Admin dispute arbitration. The customer must be refunded immediately, but the partner has already received the payout funds.*
-
-```text
-Transaction Header: TXG-REV-POSTPAY-1001 | Ref: REVERSAL_ADJUSTMENT #REV-002 | Posted: 2026-11-06 14:00:00
-Narrative: Post-payout reversal of damage credit on #DEP-502; customer refund queued and partner receivable established
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-PARTNER_RECEIVABLE               | 1,000.00    | 0.00        | Legal claim / receivable owed by partner
-REFUND_PAYABLE                   | 0.00        | 1,000.00    | Reversal credit queued for customer refund
------------------------------------------------------------------------------------------
-REFUND_PAYABLE                   | 1,000.00    | 0.00        | Gateway refund executed to customer
-GATEWAY_CLEARING                 | 0.00        | 1,000.00    | Gateway clearing adjusted
------------------------------------------------------------------------------------------
-TOTALS                           | 2,000.00    | 2,000.00    | BALANCED
-```
-
----
-
-### Scenario 8: Recovery of Partner Receivable
-
-#### Option 8A: Automatic Offset Against Subsequent Partner Rental Settlement Batch
-*Partner completes subsequent booking #BK-9040 earning net rental proceeds of ₹3,000. The platform payout engine automatically deducts the ₹1,000 outstanding `PARTNER_RECEIVABLE` and disburses the net ₹2,000 to the partner's bank account.*
-
-```text
-Transaction Header: TXG-SET-OFFSET-1001 | Ref: PARTNER_SETTLEMENT #SET-905 | Posted: 2026-11-08 11:00:00
-Narrative: Partner net settlement for #BK-9040 with automated clawback of outstanding PARTNER_RECEIVABLE
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-PARTNER_PAYABLE                  | 3,000.00    | 0.00        | Gross partner entitlement on #BK-9040 discharged
-PARTNER_RECEIVABLE               | 0.00        | 1,000.00    | Outstanding receivable recovered / extinguished
-SETTLEMENT_CLEARING              | 0.00        | 2,000.00    | Net disbursement to partner bank account
------------------------------------------------------------------------------------------
-TOTALS                           | 3,000.00    | 3,000.00    | BALANCED
-```
-
-#### Option 8B: Direct Partner Repayment (Bank Transfer / Payment Link)
-*Partner has no upcoming bookings and pays ₹1,000 directly back to the platform operating bank account.*
-
-```text
-Transaction Header: TXG-RCV-DIRECT-1001 | Ref: REVERSAL_ADJUSTMENT #REV-003 | Posted: 2026-11-09 10:00:00
-Narrative: Direct repayment received from partner to clear outstanding PARTNER_RECEIVABLE
------------------------------------------------------------------------------------------
-Account Code                     | Debit (₹)   | Credit (₹)  | Line Item Narrative
------------------------------------------------------------------------------------------
-GATEWAY_CLEARING                 | 1,000.00    | 0.00        | Repayment funds captured into platform clearing
-PARTNER_RECEIVABLE               | 0.00        | 1,000.00    | Partner receivable extinguished
------------------------------------------------------------------------------------------
-TOTALS                           | 1,000.00    | 1,000.00    | BALANCED
-```
-
----
-
-## 5. Partner-to-Contributor Settlement Model (`contributor_payables`)
-
-Under **Approach A (Recommended MVP Baseline)**, contributor fixed fees are **never recorded as platform cash disbursements**. The platform manages the workflow without assuming debtor liability:
-
-### 5.1 Selected Settlement Approach: Single Complete Settlement with Immutable Evidence
-To preserve the 54-table baseline and prevent state synchronization defects, the architecture formally adopts:
-**One complete direct settlement per contributor payable, with immutable payment evidence (Single Lump-Sum Model).**
-
-- **Indivisible Booking Obligation:** Each completed booking generates exactly one contributor payable record representing the agreed fixed compensation ($K_{contrib}$). Partial disbursements, installment transfers, or split payments are prohibited at the domain and database levels for single vehicle bookings.
-- **Immutable Payment Evidence:** When the partner executes the direct bank transfer (via NEFT/IMPS/UPI) outside the platform, the partner submits:
-  1. Bank UTR / Transaction Reference Number (`payout_reference`, VARCHAR 100, mandatory, unique per payable)
-  2. Exact settlement timestamp (`paid_at`, DATETIME)
-  3. Transfer receipt document (`payment_receipt_url`, object key)
-- **Immutability Invariant:** Once transitioned to `SETTLED_BY_PARTNER`, settlement reference fields are locked and immutable.
-- **Dispute and Audit Resolution:** If the contributor disputes the transfer (`DISPUTED`), Admin Support arbitrates using the bank UTR evidence. If the transfer was deficient or invalid, the partner executes a corrective transfer under administrative supervision and updates the record via audited administrative events, avoiding the complexity of a 55th entity (`contributor_settlement_events`).
-
-### 5.2 Lifecycle & Evidence Storage in `contributor_payables`:
-
-```text
-[Booking COMPLETED]
-       │
-       ▼
-Status: ELIGIBLE ──> Platform calculates fixed fee (e.g. ₹2,000) based on contribution agreement snapshot
-       │
-       ▼
-Status: SCHEDULED ──> Partner notified of due payment date (e.g. within 48h)
-       │
-       ▼
-[Partner Bank Transfer] ──> Partner executes direct NEFT/IMPS/UPI transfer outside platform
-       │
-       ▼
-Status: SETTLED_BY_PARTNER ──> Partner inputs:
-                               1. Bank UTR / Transaction Reference (VARCHAR 100)
-                               2. Payment Date / Timestamp
-                               3. Payment Receipt Document (Object Key)
-       │
-       ├────────────────────────────────────────┐
-       ▼                                        ▼
-Status: ACKNOWLEDGED                     Status: DISPUTED
-(Contributor verifies bank receipt)      (Contributor challenges invalid UTR / amount)
-                                                │
-                                                ▼
-                                         Admin Support reviews UTR & bank evidence
-```
-
-### 5.3 Contributor Payout Accounting Rule:
-Because the partner pays the contributor from the partner's own external bank account, **no entries are posted to the platform's general ledger**. The platform simply updates `contributor_payables.payable_status = 'SETTLED_BY_PARTNER'` and stores the UTR audit trail. This prevents false accounting claims that the platform handled or disbursed contributor funds.
-
----
-
-## 6. Contributor Price-Floor Engine & Pricing Architecture
-
-For `CONTRIBUTOR_OWNED` vehicles, backend validation enforces a mathematical price floor to guarantee that rental revenue covers all contractual and variable costs:
-
-### 6.1 Pricing Components (Separated)
-1. **Taxable Rental Amount ($R_{tax}$):** The base rental charge before platform fee and taxes.
-2. **Platform Commission ($C_{plat}$):** Percentage or fixed fee earned by the platform.
-3. **Gateway Fees ($F_{gw}$):** Transaction processing fee charged by Razorpay (e.g. 2%).
-4. **Fixed Contributor Compensation ($K_{contrib}$):** Agreed fixed fee owed by the partner to the owner.
-5. **Partner Minimum Margin ($M_{part}$):** Minimum commercial margin required by the partner.
-6. **Discount Funding ($D_{fund}$):** Explicit attribution of discounts (platform-funded vs. partner-funded).
-
-### 6.2 Price-Floor Mathematical Invariant
-
-$$\text{Base Rental Price} \ge \frac{K_{contrib} + M_{part} + \text{Allocable Fixed Costs}}{1 - (\text{Commission Rate} + \text{Gateway Fee Rate} + \text{Effective Tax Rate})}$$
-
-> [!CAUTION]
-> **No Hardcoded GST Deductions:** Tax calculations must **never** be hardcoded as a simple percentage deduction from rental revenue. Indian GST rules differentiate between Goods Transport, Rent-a-Cab, and E-commerce Marketplace Facilitation (Section 9(5) CGST Act). Tax rates, HSN/SAC codes (e.g. SAC 9966 vs SAC 9973), and GST application rules are **fully configurable** in `platform_commission_rules` and marked **PENDING professional tax validation**.
-
-### 6.3 Discount Attribution Rules:
-- If a partner wishes to offer a promotional discount that drops the listing price below the calculated floor, the platform requires an **authorized override**.
-- The override explicitly debits the deficit (`partner_discount_subsidy`) directly from `PARTNER_PAYABLE`, leaving the contributor's fixed fee ($K_{contrib}$) 100% protected.
+1. **Legal Validation:** Confirm the bilateral customer-partner rental agreement and the partner-as-payee model under Indian contract and consumer protection laws.
+2. **Tax Validation:** Confirm GST classification (pure technology marketplace intermediary vs. E-Commerce Operator under CGST Act Section 9(5)).
+3. **Insurance Validation:** Verify that rental partners hold valid commercial rental vehicle insurance policies covering self-drive rentals and third-party liabilities.
+4. **Provider Validation:** Review terms and eligibility prerequisites with RBI-authorized payment aggregators before initiating future marketplace gateway onboarding.

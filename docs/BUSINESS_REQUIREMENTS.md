@@ -102,101 +102,177 @@ Physical vehicle custody is tracked as an independent state machine (`vehicle_cu
 4. **Hold Isolation:** Creating a booking hold **does NOT create an incomplete or draft record in the `bookings` table**.
 5. If the hold expires or is released, the slot is immediately freed for other customers.
 
-### 5.2 Payment Order, Capture & Late Webhook Protocol
-1. A `payment_orders` entity is generated with Razorpay using an idempotency key.
-2. Upfront collection presents the taxable rental charge, delivery fee, and refundable security deposit as distinct line items.
-3. Upon successful payment transaction capture, a webhook is delivered to `payment_webhook_events`.
-4. **Late Webhook Protocol (Payment Arriving After Hold Expiration):**
-   - Webhook handler verifies signature and deduplicates on `provider_event_id`.
-   - Acquires fresh lock: `SELECT id FROM vehicles WHERE id = :id FOR UPDATE;`.
-   - **Booking Recovery:** If the requested interval plus turnaround buffer remains completely available, the system reactivates the hold, creates the `bookings` record in `CONFIRMED` status, and sends a booking confirmation notification to the customer.
-   - **Automatic Full Refund:** If the requested interval has been reserved by another customer in the interim, the system **automatically triggers a 100% gateway refund**, logs an incident, and alerts the customer and admin.
+### 5.2 Partner-Direct Customer Rental Payment & Verification Workflow
+
+The MVP adopts a **Partner-Direct Payment Collection Model**. The platform does not collect, hold, escrow, split, or disburse customer rental money or security deposits.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        PARTNER-DIRECT CUSTOMER PAYMENT WORKFLOW                        │
+│                                                                                        │
+│  [Customer]                                  [Platform]               [Rental Partner] │
+│      │                                            │                          │         │
+│      │── 1. Selects vehicle & dates ─────────────>│                          │         │
+│      │                                            │ (Acquires 15-min hold)   │         │
+│      │<── 2. Displays Partner Payment Info ───────│ (Fetches QR/UPI details) │         │
+│      │       (Payee Name, UPI ID, QR, Cash option)│                          │         │
+│      │                                            │                          │         │
+│      │── 3. Transfers funds directly to Partner ────────────────────────────>│         │
+│      │       (Outside platform via UPI/NetBanking/Cash)                      │ (Funds  │
+│      │                                            │                          │ received│
+│      │── 4. Submits Transaction Reference (UTR) ─>│                          │ in bank)│
+│      │       (Method, amount, time, proof)        │                          │         │
+│      │                                            │── 5. Notifies Partner ──>│         │
+│      │                                            │    (SUBMITTED_FOR_VERIFY)│         │
+│      │                                            │                          │── 6. Checks bank/UPI
+│      │                                            │<── 7. VERIFIES / REJECTS │      records
+│      │                                            │                          │         │
+│      │<── 8. Booking CONFIRMED (if verified) ─────│ (Converts hold)          │         │
+│      │       (OR Rejection notice with reason)    │                          │         │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Detailed Step-by-Step Flow:
+1. **Booking Hold Request:** Customer selects dates and pickup options. The system acquires a pessimistic lock (`SELECT ... FOR UPDATE`) and creates a temporary `booking_holds` record (15-minute TTL).
+2. **Display Partner Payment Instructions:** The checkout interface displays the managing partner's payment profile (`partner_payment_profiles`):
+   - Legal trade / payee name.
+   - Partner's UPI ID.
+   - Dynamic/static UPI QR code image (retrieved via secure presigned URL).
+   - Optional external payment URL (if configured).
+   - Pay-at-pickup option (only if explicitly enabled by the partner).
+   - Exact itemized demand: Rental Subtotal + Security Deposit.
+3. **Direct External Transfer:** The customer transfers the exact amount directly to the partner using their UPI app, net banking, or external payment link.
+4. **Payment Submission:** The customer submits the transaction reference via `POST /api/v1/bookings/holds/{holdId}/submit-payment`:
+   - Payment method (`UPI_QR`, `UPI_ID`, `PAYMENT_LINK`, `CASH_AT_PICKUP`).
+   - Transaction Reference / Bank UTR number (mandatory for electronic transfers).
+   - Amount submitted.
+   - Transaction timestamp.
+   - Optional payment screenshot or receipt attachment.
+5. **Pending Verification Status:**
+   - The platform creates a `rental_payment_submissions` record in `SUBMITTED_FOR_VERIFICATION` status.
+   - The underlying `rental_payment_demands` updates to `SUBMITTED`.
+   - The vehicle hold remains **strictly locked** while an active verification window (configurable default: 60 minutes) is open.
+   - The managing partner receives an immediate push/SMS/email alert to verify the incoming payment.
+6. **Independent Partner Audit:** The partner inspects their own UPI app, bank statement, or cash register to verify credit.
+7. **Partner Verification Gate (Non-Negotiable Invariant):**
+   - **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as successful or confirm a booking.**
+   - **ONLY explicit partner verification** can transition the submission to `VERIFIED`.
+   - Partner submits verification decision:
+     - **Action A: VERIFY** (`POST /api/v1/partner/payment-submissions/{id}/verify`): Confirms receipt of required funds.
+     - **Action B: REJECT** (`POST /api/v1/partner/payment-submissions/{id}/reject`): Rejects with mandatory reason (`UTR_NOT_FOUND`, `AMOUNT_MISMATCH`, `PAYMENT_DECLINED`).
+8. **Confirmation / Failure Outcomes:**
+   - **Upon Verification:** `rental_payment_demands` transitions to `VERIFIED`. `booking_holds` transitions to `CONVERTED`. A master `bookings` contract is created in `CONFIRMED` status. A `security_deposits` record is created in `HELD_BY_PARTNER` status. Customer is notified immediately.
+   - **Upon Rejection:** `rental_payment_submissions` transitions to `REJECTED`. Customer is alerted with the rejection reason. Customer may submit a corrected UTR within the remaining hold window, or the hold expires.
+   - **Pay-at-Pickup Authorized Flow:** If the partner allows cash/UPI at vehicle pickup, the hold converts to `CONFIRMED` with payment marked `PENDING_AT_PICKUP`. **Vehicle handover inspection is strictly blocked** until the partner logs verified collection of rental charges and security deposit at pickup.
+
+#### Exception & Edge Scenario Handling:
+- **Hold Expiration without Submission:** If customer does not submit payment within hold TTL (15m), hold transitions to `EXPIRED`. Vehicle calendar is freed immediately.
+- **Partner Verification Timeout / Non-Response:** If partner does not verify within the verification window (60m):
+  - System does NOT auto-confirm.
+  - Escalates alert to Partner and Support/Admin.
+  - If timeout elapses without action, hold is released and customer is flagged for partner direct refund.
+- **Duplicate Reference Prevention:** Database constraint `uk_pay_submissions_ref` on (`payee_partner_id`, `transaction_reference`) prevents the same UTR from being submitted to the same partner twice.
+- **Payment Amount Mismatch:** If the customer transfers less than required, partner rejects submission with reason `INSUFFICIENT_AMOUNT`.
+- **Late Payment (Payment submitted after hold expiry):** If customer pays externally but submits UTR after hold expired:
+  - System re-checks vehicle availability. If available, customer can request hold reactivation and submit.
+  - If vehicle interval was booked by another customer in the interim, booking cannot be confirmed. System flags a payment mismatch exception, instructs customer to contact partner, and prompts partner to refund the transfer directly.
+
+---
 
 ### 5.3 Operational Booking Fulfillment vs. Financial Completion
 1. **Pickup Handover:** Vehicle is inspected (`inspections`), odometer and fuel/battery are recorded with photos (`inspection_media`), dual signatures/OTPs are exchanged, and a `vehicle_custody_events` record is posted (`CUSTOMER_CUSTODY`). Booking transitions to `IN_PROGRESS`.
-2. **Return Handover:** Vehicle is returned to partner hub or contributor, post-rental inspection checklist is executed, condition photos are captured, and custody is restored (`PARTNER_CUSTODY` or `CONTRIBUTOR_CUSTODY`).
+   - *Pay-at-Pickup Check:* Handover cannot proceed unless payment demand and deposit collection are verified by the partner.
+2. **Return Handover:** Vehicle is returned to partner hub or contributor, post-rental return inspection checklist is executed, condition photos are captured, and custody is restored (`PARTNER_CUSTODY` or `CONTRIBUTOR_CUSTODY`).
 3. **Operational Completion:** Once return inspection is signed and custody is restored, the booking transitions to **`COMPLETED` immediately**.
-4. **Decoupled Financial Lifecycles:** Operational completion triggers contributor payable eligibility in `contributor_payables`. It does **not** depend on whether deposit refunds, damage disputes, or partner bank disbursements have completed.
+4. **Decoupled Financial Lifecycles:** Operational completion triggers contributor payable eligibility in `contributor_payables`. It does **not** depend on whether deposit refunds, damage disputes, or customer claims have settled.
 
-### 5.4 Security Deposit Management & Dispute Arbitration
-1. **Liability Segregation:** Security deposits are tracked as a **refundable customer liability**, never as platform revenue or gross turnover.
-2. **Clean Return:** If the return inspection logs zero damage, fuel deficit, or late penalties, a 100% gateway refund is automatically triggered.
-3. **Damage Deduction Claims:** If damage or excess mileage is reported, the partner submits a `deposit_deductions` claim with mandatory photo evidence and repair estimates.
-4. **Immediate Release of Undisputed Balance:** If the deposit is ₹5,000 and the claim is ₹1,500, the uncontested ₹3,500 is **immediately refunded** to the customer.
-5. **48-Hour Dispute Window:** The customer is notified and has 48 hours to accept or dispute the claim.
-6. **No Automatic Approval:** **A disputed damage claim is NEVER automatically approved merely because the 48-hour response window expires.**
-   - If disputed by customer $\rightarrow$ Transitions to `DISPUTED` and enters `ADMIN_ARBITRATION`. Admin evaluates pre-rental vs. post-rental evidence, GPS logs, and repair estimates before deciding.
-   - If customer fails to respond $\rightarrow$ Transitions to `PENDING_ADMIN_REVIEW`. Admin verifies partner evidence before approving any deduction from the deposit liability.
+---
+
+### 5.4 Security Deposit Management, Deductions & Partner Refunds
+
+In the partner-direct model, **the rental partner directly collects, holds, and returns the customer's security deposit**. The platform does not hold or escrow deposit funds.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        PARTNER-DIRECT SECURITY DEPOSIT LIFECYCLE                       │
+│                                                                                        │
+│  [Customer Checkout] ──> Paid directly to Partner along with rental fee                │
+│                                │                                                       │
+│                                ▼                                                       │
+│                     Status: HELD_BY_PARTNER                                            │
+│                                │                                                       │
+│           ┌────────────────────┴────────────────────┐                                  │
+│           ▼                                         ▼                                  │
+│   [Clean Vehicle Return]                   [Damage / Late / Fuel Claim]                │
+│           │                                         │                                  │
+│           ▼                                         ▼                                  │
+│  Partner sends UPI/Bank                Partner submits deposit_deductions              │
+│  refund directly to Customer           with photos and repair estimate                 │
+│           │                                         │                                  │
+│           ▼                                         ├────────────────────────┐         │
+│  Partner records refund reference                   ▼                        ▼         │
+│  (UTR, date, proof) in Platform              [Customer Accepts]     [Customer Disputes]│
+│           │                                         │                 (48h window)     │
+│           ▼                                         ▼                        ▼         │
+│  Status: REFUNDED_IN_FULL              Partner deducts agreed       Admin Arbitration  │
+│  Customer acknowledges or disputes     amount & refunds residual    (Evaluates media)  │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Deposit Tracking Responsibilities:
+1. **Platform Tracking Records:** The platform records expected deposit amount, amount collected, collection method, transaction reference, current status, deductions, refund amounts, and evidence documents.
+2. **Clean Return & Immediate Direct Refund:** If post-rental inspection confirms clean vehicle condition, the partner is obligated to execute a direct refund (UPI/IMPS) within 24 hours and log the Bank UTR in `security_deposit_refunds`.
+3. **Evidence-Based Damage Claims:** If damage or fuel deficit is reported, the partner submits a `deposit_deductions` claim with mandatory pre/post inspection photos and repair quotes.
+4. **Immediate Release of Undisputed Balance:** If the deposit is ₹5,000 and the claim is ₹1,500, the partner must immediately refund the uncontested ₹3,500 and log the payment reference.
+5. **48-Hour Dispute Window:** The customer has 48 hours to accept or dispute the proposed deduction.
+6. **Non-Negotiable Dispute Invariant:** **A missing customer response must NEVER automatically approve a damage deduction claim.**
+   - If disputed by customer $\rightarrow$ Transitions to `CUSTOMER_DISPUTED` and enters `ADMIN_ARBITRATION`. Admin evaluates pre-rental vs. post-rental evidence, GPS logs, and repair estimates before deciding.
+   - If customer does not respond $\rightarrow$ Transitions to `PENDING_ADMIN_REVIEW`. Admin verifies partner evidence before approving deduction.
+7. **Platform Refund Boundary:** The platform records and monitors refunds, but **does not execute or claim to execute an external bank refund**.
+
+---
 
 ### 5.5 Cancellation and No-Show Policies
 1. **Pre-Pickup Cancellation:**
    - Customers may cancel prior to key handover. The system applies the policy snapshotted in `bookings.cancellation_policy_snapshot`.
-   - Security deposits are **100% refunded** upon any cancellation because physical custody was never transferred.
-   - If cancelled by the rental partner or platform (e.g. unexpected vehicle breakdown), the customer receives a **100% full refund** (rental fee + deposit) plus a customer inconvenience credit where applicable.
+   - Security deposits are **100% refunded by the partner** because physical custody was never transferred.
+   - If cancelled by the rental partner (e.g. vehicle breakdown), the partner must issue a **100% full refund** (rental fee + deposit).
 2. **Customer No-Show:**
-   - If a customer fails to arrive for vehicle pickup within the 2-hour grace period, the partner or admin marks the booking as `NO_SHOW`.
+   - If a customer fails to arrive for vehicle pickup within the 2-hour grace period, the partner marks the booking as `NO_SHOW`.
    - The vehicle calendar is immediately freed for new reservations.
-   - The rental fee is retained as liquidated damages per cancellation policy snapshot, while the **security deposit is refunded in full (100%)** via the refund pipeline.
+   - Rental fees are retained as liquidated damages per cancellation policy snapshot, while the **security deposit must be refunded in full (100%) by the partner**.
 
 ---
 
-## 6. Financial Architecture & Contributor Settlement
+## 6. Financial Architecture & Responsibilities (Partner-Direct Model)
 
-### 6.1 Customer Payment, Deposit Custody, and Partner Settlement Demarcation
-To eliminate legal and regulatory ambiguity, operational roles and financial responsibilities are clearly demarcated:
-- **Merchant of Record (MoR):** The Platform Operating Entity acts as the digital marketplace MoR for customer checkout transactions on the web/app. It collects total customer payments, issues platform facilitation tax invoices, and contracts with RBI-authorized payment aggregators. *(Pending legal validation regarding GST Section 9(5) E-Commerce Operator classification).*
-- **Customer Payment Recipient:** Captured via payment gateway into platform clearing (`GATEWAY_CLEARING`). Rental charges are held in `CUSTOMER_RENTAL_CLEARING` and security deposits in `CUSTOMER_REFUNDABLE_LIABILITY`.
-- **Security Deposit Holder:** Held exclusively by the platform as a **Refundable Balance Sheet Liability**. Deposits are never treated as platform revenue, working capital, or an unregulated private "escrow".
-- **Customer Refund Responsibility:** The platform bears sole operational and contractual responsibility for processing customer refunds (cancellations, clean return deposit releases, dispute adjustments, late hold collision refunds) directly to original payment instruments via gateway APIs (`REFUND_PAYABLE`). Partners never refund customers directly.
-- **Partner Rental Settlement:** The platform is contractually obligated to disburse net rental proceeds (`PARTNER_PAYABLE`) to verified partners on a scheduled batch cycle (e.g. T+2 post return) via payout disbursement APIs (`SETTLEMENT_CLEARING`). Net proceeds equal gross rental subtotal minus platform commission, applicable gateway fees, partner-funded discounts, and mandated tax withholdings (TDS/TCS).
-- **Payment Provider Responsibilities:** PCI-DSS compliance, UPI intent/collect flows, fraud checks, instant webhook callbacks, automated refund execution, and scheduled bank settlement into platform clearing accounts per RBI guidelines.
-- **Method-Independent Gateway Architecture:** Payment provider integrations are abstracted behind provider-agnostic interfaces (`PaymentGatewayClient`, `PayoutGatewayClient`). The database schema, state machines, and double-entry ledger remain decoupled from any single proprietary gateway mechanism.
-- **Independence from Approach A:** Direct partner-to-contributor settlement under Approach A applies **strictly and exclusively** to the private bilateral commercial contract between the Rental Partner and the Vehicle Contributor. **Approach A does NOT apply to, nor does it establish regulatory compliance for, the separate customer payment collection and partner rental settlement flow.**
+### 6.1 Legal & Operational Responsibility Demarcation
 
-### 6.2 Strict Separation of Financial Domains
-1. **Platform General Ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`):**
-   - Tracks actual platform cash, customer refundable liabilities, platform commission revenue, net partner payables, and partner receivables.
-   - Direct payments by partners to contributors are **never represented as platform cash disbursements**.
-2. **Partner-Contributor Contractual Obligation Model (`contributor_payables`):**
-   - The rental partner is the sole contractual debtor for contributor fixed earnings.
-   - The platform calculates the payable, tracks eligibility, records due dates, and stores direct partner settlement evidence (UTR number, date, receipt).
-   - This obligation is **not** a platform legal liability and does not affect the platform general ledger.
-3. **Approach B (Razorpay Route):**
-   - Remains a future enhancement marked **PENDING** partner linked-account onboarding, KYC workflows, and RBI payment aggregator regulatory review.
+In the MVP, the marketplace operates as an operational record-keeping and booking facilitator:
 
-### 6.3 Contributor Settlement Architecture: Selected Single Lump-Sum Settlement Model
-To preserve the approved 54-table baseline and prevent state synchronization defects, the architecture formally adopts:
-**One complete direct settlement per contributor payable, with immutable payment evidence (Single Lump-Sum Model).**
-- **Indivisible Booking Obligation:** Each completed booking generates exactly one contributor payable record representing the agreed fixed compensation ($K_{contrib}$). Partial disbursements, installment transfers, or split payments are prohibited at the domain and database levels for single vehicle bookings.
-- **Immutable Payment Evidence:** When the partner executes the direct bank transfer (via NEFT/IMPS/UPI) outside the platform, the partner submits:
-  1. Bank UTR / Transaction Reference Number (`payout_reference`, VARCHAR 100, mandatory, unique per payable)
-  2. Exact settlement timestamp (`paid_at`, DATETIME)
-  3. Transfer receipt document (`payment_receipt_url`, object key)
-- **Immutability Invariant:** Once transitioned to `SETTLED_BY_PARTNER`, settlement reference fields are locked and immutable.
-- **Dispute and Audit Resolution:** If the contributor disputes the transfer (`DISPUTED`), Admin Support arbitrates using the bank UTR evidence. If the transfer was deficient or invalid, the partner executes a corrective transfer under administrative supervision and updates the record via audited administrative events, avoiding the complexity of a 55th entity (`contributor_settlement_events`).
+| Responsibility Domain | Responsible Entity | Operational & Platform Implementation |
+|---|---|---|
+| **Rental Service Provider & Payee** | **Rental Partner** | Customer-facing rental contractor and direct payee for all bookings on managed vehicles. Receives rental fees and deposits directly via partner UPI QR/ID/Cash. |
+| **Payment Verification** | **Rental Partner** | Independently checks bank/UPI credits and confirms or rejects submitted payment references. |
+| **Deposit Custody & Refunds** | **Rental Partner** | Holds security deposits and executes refunds directly to customer bank accounts. Logs Bank UTR and proof on platform. |
+| **Booking & Record Keeping** | **Platform** | Manages calendar availability, temporary reservation holds, payment instructions, submission workflows, and immutable audit logs. |
+| **Dispute Resolution** | **Platform Admin** | Arbitrates contested damage claims, payment disputes, and deposit deduction discrepancies based on inspection evidence. |
+| **Contributor Compensation** | **Rental Partner** | Sole contractual debtor for contributor fixed earnings. Pays contributor directly outside platform via external transfer. |
 
-### 6.4 Financial Reversals and Partner Receivable Recovery
-When an incorrect partner credit has already been disbursed to the partner's external bank account, the platform executes a balanced, double-entry reversal:
-1. **Creation of Partner Receivable:** The platform creates a balanced transaction debiting `PARTNER_RECEIVABLE` (Asset) and crediting `REFUND_PAYABLE` (Liability), allowing immediate customer refund execution without negative balances.
-2. **Recovery Option A (Automated Payout Offset):** The outstanding receivable is automatically deducted from the partner's net rental proceeds in the subsequent settlement batch.
-3. **Recovery Option B (Direct Repayment):** If no upcoming bookings exist, the partner repays the platform via direct bank transfer or gateway payment link.
+### 6.2 Contributor Compensation (Approach A Baseline)
+- Unchanged business model: Rental partner manages vehicle and owes contributor an agreed fixed compensation per eligible completed booking.
+- Contributor compensation is an obligation between partner and contributor, tracked in `contributor_payables`.
+- Partner pays contributor directly via external NEFT/IMPS/UPI and logs Bank UTR and receipt proof.
+- Single lump-sum settlement per eligible booking.
+- Direct partner-to-contributor payments **generate zero entries in any platform cash ledger**.
 
-### 6.5 Contributor Price-Floor Engine
-For `CONTRIBUTOR_OWNED` vehicles, backend validation enforces a mathematical price floor:
-
-$$\text{Base Rental Price} \ge \frac{\text{Contributor Fixed Fee} + \text{Partner Min Margin} + \text{Allocable Fixed Costs}}{1 - (\text{Platform Commission \%} + \text{Gateway Fee \%} + \text{Effective Tax \%})}$$
-
-### 6.6 Separation of Financial Components & Tax Disclaimer
-The platform cleanly separates:
-1. **Taxable Rental Amount:** Base rental fee subject to GST.
-2. **Platform Commission:** Marketplace facilitation fee earned by platform.
-3. **Gateway Fees:** Payment processing fee charged by provider.
-4. **Fixed Contributor Compensation:** Contractual obligation owed by partner to owner.
-5. **Partner Margin:** Residual gross profit earned by partner.
-6. **Discount Funding:** Explicit tracking of whether promotions are platform-funded or partner-funded.
-
-> [!CAUTION]
-> **No Hardcoded GST Percentage:** Tax calculations must **never** be hardcoded as a simple deduction from rental revenue. Indian GST rules differentiate between Goods Transport, Rent-a-Cab, and E-commerce Marketplace Facilitation (Section 9(5) CGST Act). Tax rates, HSN/SAC codes, and GST splits are fully configurable and marked **PENDING professional tax validation**.
+### 6.3 Future Payment Provider Integration (Future Phase)
+A future approved marketplace payment integration (e.g. Razorpay Route or Cashfree Easy Split) may be introduced in a subsequent release, subject to:
+1. Platform corporate merchant onboarding.
+2. Formal legal and tax validation regarding GST Section 9(5) E-Commerce Operator status.
+3. Partner sub-merchant linked-account KYC workflows.
+4. Automated webhook-driven payment capture and split payouts.
+*In the MVP, all customer payments and security deposits remain 100% partner-direct.*
 
 ---
 

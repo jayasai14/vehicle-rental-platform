@@ -2,7 +2,7 @@
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
-**Status:** Database Design Freeze Candidate Baseline (54-Table Architecture)  
+**Status:** Database Design Freeze Candidate Baseline (Partner-Direct Payment Model)  
 
 > [!NOTE]
 > This document defines the **target REST API contract specification** under the `/api/v1` namespace. No application controllers, routes, or endpoints have been implemented yet.
@@ -16,9 +16,10 @@
 - **Monetary Values:** Represented as standard formatted string or decimal numbers with explicit currency code (e.g. `{"amount": "5000.00", "currency": "INR"}`); floating-point math is barred.
 - **Timestamps:** ISO-8601 with timezone offset (`2026-11-01T14:30:00+05:30`); persisted internally in UTC.
 - **Error Format:** Consistent error response schema: `timestamp`, `status`, `code`, `message`, `path`, `correlationId`, `fieldErrors`.
-- **Idempotency:** Unique `Idempotency-Key` header mandated on payment creation, hold conversion, refund dispatch, and settlement recording.
-- **Zero-Trust Pricing:** Never accept prices, commission rates, fixed fees, or deposit amounts from clients; all financial figures are derived authoritatively on the backend.
+- **Idempotency:** Unique `Idempotency-Key` header mandated on payment submission, hold conversion, and refund recording.
+- **Zero-Trust Pricing:** Never accept prices, fixed fees, or deposit amounts from clients; all financial demands are derived authoritatively on the backend.
 - **Partner Verification Gate:** All endpoints under `/partner/**` enforce that the authenticated partner's profile is in `VERIFIED` status (`verification_status = 'VERIFIED'`). Pending applicants are rejected with `403 Forbidden`.
+- **Anti-Auto-Verification Invariant:** A customer-uploaded screenshot or UTR never automatically marks a payment as verified. Only explicit partner action can verify a payment submission.
 
 ---
 
@@ -40,18 +41,17 @@
 
 ---
 
-## 3. Partner Hubs, Locations & Delivery Zones (Verified Partners Only)
+## 3. Partner Hubs, Locations & Logistics (Verified Partners Only)
 
 - `GET /api/v1/partners/me` - Retrieve partner business profile and verification status.
 - `PATCH /api/v1/partners/me` - Update business details.
 - `POST /api/v1/partners/me/verification-documents` - Upload commercial permits, GSTIN, trade licence.
 - `GET /api/v1/partners/me/verification-status` - Check partner verification status (`SUBMITTED`, `IN_REVIEW`, `VERIFIED`, `REJECTED`).
-- `GET /api/v1/partner/locations` - List partner depots/hubs (`partner_locations`).
-- `POST /api/v1/partner/locations` - Register new verified partner hub with operating hours.
-- `PATCH /api/v1/partner/locations/{locationId}` - Update hub operating details.
-- `GET /api/v1/partner/delivery-zones` - List configured delivery service radiuses.
-- `POST /api/v1/partner/delivery-zones` - Configure doorstep delivery radius and tiered fees.
-- `PATCH /api/v1/partner/delivery-zones/{zoneId}` - Update delivery zone pricing.
+- `GET /api/v1/partner/hubs` - List partner depots/hubs (`partner_hubs`).
+- `POST /api/v1/partner/hubs` - Register new verified partner hub with operating hours.
+- `PATCH /api/v1/partner/hubs/{hubId}` - Update hub operating details.
+- `GET /api/v1/partner/pickup-locations` - List configured pickup points.
+- `POST /api/v1/partner/pickup-locations` - Configure vehicle pickup and return points.
 
 ---
 
@@ -96,21 +96,20 @@
 - `POST /api/v1/booking-quotes` - Calculate derived rental charges, delivery fee, turnaround buffer, and refundable security deposit.
 - `POST /api/v1/booking-holds` - Acquire 15-minute temporary reservation lock under `SELECT ... FOR UPDATE`. **Does NOT create an incomplete booking record.**
 - `DELETE /api/v1/booking-holds/{holdId}` - Manually release hold early, freeing vehicle calendar.
-- `POST /api/v1/bookings` - Convert active hold to `CONFIRMED` master booking upon verified payment capture.
 - `GET /api/v1/bookings/{bookingId}` - Retrieve booking details (scoped by role: customer, partner, or owner).
 - `GET /api/v1/customer/bookings` - List customer's booking history.
 - `GET /api/v1/partner/bookings` - List partner's managed bookings with filter by status.
 - `POST /api/v1/bookings/{bookingId}/cancel` - Customer or partner cancels pre-pickup under cancellation policy.
 - `POST /api/v1/bookings/{bookingId}/extension-requests` - Customer requests rental extension.
 - `POST /api/v1/partner/bookings/{bookingId}/extension-decision` - Partner approves or rejects extension.
-- `POST /api/v1/partner/bookings/{bookingId}/mark-no-show` - Partner marks customer no-show after grace period (deposit 100% refunded; rental retained).
+- `POST /api/v1/partner/bookings/{bookingId}/mark-no-show` - Partner marks customer no-show after grace period (deposit refunded by partner; rental retained).
 
 ---
 
 ## 7. Inspections, Incidents & Custody Handovers
 
 - `POST /api/v1/partner/bookings/{bookingId}/pickup-inspection` - Partner completes pre-rental checklist, photos, and odometer.
-- `POST /api/v1/customer/bookings/{bookingId}/acknowledge-pickup` - Customer signs pre-rental inspection, triggering custody shift to customer (`CUSTOMER_CUSTODY`).
+- `POST /api/v1/customer/bookings/{bookingId}/acknowledge-pickup` - Customer signs pre-rental inspection. Handover blocked until rental and deposit are verified.
 - `POST /api/v1/contributor/bookings/{bookingId}/handover-inspection` - Contributor participates in owner-managed direct handover inspection.
 - `POST /api/v1/contributor/bookings/{bookingId}/acknowledge-handover` - Contributor acknowledges physical handover directly to customer.
 - `POST /api/v1/partner/bookings/{bookingId}/return-inspection` - Partner completes post-rental return checklist and condition photos.
@@ -122,48 +121,39 @@
 
 ---
 
-## 8. Payments, Security Deposits, Refunds & Contributor Settlements
+## 8. Partner Payment Profiles, Demands, Submissions & Deposits
 
-- `POST /api/v1/payments/orders` - Generate Razorpay payment order for rental charges + security deposit with idempotency key.
-- `POST /api/v1/payments/{paymentId}/verify` - Client submits gateway signature for verification.
-- `POST /api/v1/payments/webhooks/razorpay` - Idempotent webhook receiver (HMAC SHA-256 verified; executes late webhook protocol: booking recovery if available, or automatic full refund if reserved).
-- `GET /api/v1/customer/payments` - Customer views payment transaction receipts.
-- `GET /api/v1/bookings/{bookingId}/deposit` - View deposit status, held balance, and deductions.
-- `POST /api/v1/partner/bookings/{bookingId}/deposit/deductions` - Partner proposes deduction with mandatory photos and quotes.
-- `POST /api/v1/bookings/{bookingId}/deposit/release-undisputed` - Immediately refunds uncontested deposit balance to customer.
-- `POST /api/v1/customer/deposit-deductions/{deductionId}/dispute` - Customer disputes proposed deduction within 48-hour window.
-- `POST /api/v1/admin/deposit-deductions/{deductionId}/resolve` - Admin arbitrates deposit dispute (**never auto-approved upon 48h expiration**).
-- `POST /api/v1/admin/bookings/{bookingId}/deposit/release` - Trigger release of residual deposit liability.
-- `POST /api/v1/admin/bookings/{bookingId}/refunds` - Trigger outward customer refund via gateway refund API.
-- `POST /api/v1/admin/refunds/{refundId}/retry` - Finance/Admin re-dispatches failed refund to gateway after error resolution.
-- `POST /api/v1/admin/refunds/{refundId}/settle-offline` - Finance logs manual direct bank transfer (NEFT/IMPS) with UTR for permanently declined refunds.
-- `GET /api/v1/admin/partner-receivables` - Query outstanding partner receivables resulting from post-payout reversals or clawbacks.
-- `POST /api/v1/admin/partner-receivables/{receivableId}/record-repayment` - Record direct partner bank repayment extinguishing receivable.
-- `GET /api/v1/payout-methods/me` - List user's registered disbursement accounts.
-- `POST /api/v1/payout-methods/me` - Register tokenized bank account / UPI ID (RazorpayX fund account).
-- `DELETE /api/v1/payout-methods/me/{methodId}` - Remove disbursement account.
-- `GET /api/v1/partner/financials` - Partner views gross rental proceeds, platform commission cut, and net earnings.
+- `GET /api/v1/partner/payment-profile` - Partner views their configured direct payment profile (payee name, UPI ID, QR key, link, cash setting).
+- `PUT /api/v1/partner/payment-profile` - Partner configures payee display name, UPI ID, uploads UPI QR image, external payment link, accepted payment methods, and cash-at-pickup toggle.
+- `GET /api/v1/booking-holds/{holdId}/payment-instructions` - Customer views managing partner's payment instructions (payee name, UPI QR image presigned URL, UPI ID, amount due, hold expiration time).
+- `POST /api/v1/booking-holds/{holdId}/submit-payment` - Customer submits direct payment proof: payment method, transaction reference / UTR, amount, transaction timestamp, optional receipt image. Transitions hold to `VERIFICATION_PENDING`.
+- `GET /api/v1/partner/payment-submissions` - Partner views pending payment submissions requiring verification (`SUBMITTED_FOR_VERIFICATION`).
+- `POST /api/v1/partner/payment-submissions/{submissionId}/verify` - Partner verifies funds received in their own bank/UPI account; transitions payment to `VERIFIED` and hold to `CONVERTED`, creating `bookings` row (`CONFIRMED`).
+- `POST /api/v1/partner/payment-submissions/{submissionId}/reject` - Partner rejects payment submission with mandatory reason; notifies customer.
+- `GET /api/v1/customer/payment-submissions` - Customer tracks submitted payment proof and verification status.
+- `GET /api/v1/bookings/{bookingId}/security-deposit` - View security deposit status in partner custody.
+- `POST /api/v1/partner/bookings/{bookingId}/security-deposit/deductions` - Partner proposes evidence-based damage/fuel deduction.
+- `POST /api/v1/customer/deposit-deductions/{deductionId}/dispute` - Customer disputes proposed deduction within 48h.
+- `POST /api/v1/admin/deposit-deductions/{deductionId}/resolve` - Admin arbitrates dispute (**never auto-approved upon 48h expiration**).
+- `POST /api/v1/partner/bookings/{bookingId}/security-deposit/record-refund` - Partner records direct deposit refund to customer (refund amount, method, UTR reference, proof document).
+- `POST /api/v1/customer/security-deposit-refunds/{refundId}/acknowledge` - Customer acknowledges receipt of deposit refund.
+- `POST /api/v1/customer/security-deposit-refunds/{refundId}/dispute` - Customer disputes non-receipt of refund funds.
 - `GET /api/v1/partner/contributor-payables` - Partner lists contractual fixed fee obligations owed to contributors (`contributor_payables`).
-- `POST /api/v1/partner/contributor-payables/{payableId}/record-settlement` - **Approach A Baseline:** Partner records single complete direct bank transfer with mandatory UTR reference, payment date, and receipt attachment. (Does NOT affect platform general ledger cash).
+- `POST /api/v1/partner/contributor-payables/{payableId}/record-settlement` - **Approach A Baseline:** Partner records single complete direct bank transfer with mandatory UTR reference, payment date, and receipt attachment.
 - `POST /api/v1/contributor/contributor-payables/{payableId}/acknowledge` - Contributor confirms receipt of direct partner settlement.
 - `POST /api/v1/contributor/contributor-payables/{payableId}/dispute` - Contributor disputes settlement amount or invalid UTR reference.
 - `GET /api/v1/contributor/earnings` - Contributor dashboard tracking fixed compensation per eligible completed booking.
 - `GET /api/v1/contributor/settlements` - Contributor views history of recorded direct settlements and UTRs.
-- `POST /api/v1/admin/settlements/route-batch` - **Approach B (PENDING Validation):** Platform-facilitated Route split execution.
 
 ---
 
-## 9. General Ledger & Administrative Audit Endpoints
+## 9. Administrative Operations, Verification Gating & Auditing
 
-- `GET /api/v1/admin/ledger/accounts` - List Master Chart of Accounts (`ledger_accounts`).
-- `GET /api/v1/admin/ledger/transactions` - Query journal transaction headers (`ledger_transactions`) with date range and reference filters.
-- `GET /api/v1/admin/ledger/transactions/{transactionGroupId}/entries` - View balanced journal line items (`ledger_entries`).
-- `GET /api/v1/admin/audit-logs` - Query security, authentication, and financial audit logs with correlation IDs.
+- `GET /api/v1/admin/audit-logs` - Query security, authentication, payment verification, and administrative audit logs with correlation IDs.
 - `POST /api/v1/admin/partners/{partnerId}/verify` - Approve partner onboarding application (unlocks partner operational capabilities).
 - `POST /api/v1/admin/partners/{partnerId}/reject` - Reject partner application with reason.
 - `POST /api/v1/admin/vehicles/{vehicleId}/verify` - Approve or reject vehicle listing compliance.
 - `GET /api/v1/admin/disputes` - Queue of open deposit and settlement disputes requiring arbitration.
-- `POST /api/v1/admin/commission-rules` - Configure platform commission percentages, fixed fees, and minimum thresholds.
 
 ---
 
@@ -176,3 +166,15 @@
 - `POST /api/v1/support/tickets/{ticketId}/messages` - Add message or evidence attachment to support ticket.
 - `GET /api/v1/notifications` - List in-app notifications.
 - `PATCH /api/v1/notifications/{notificationId}/read` - Mark notification as read.
+
+---
+
+## 11. Future-Phase Marketplace Gateway & General Ledger Endpoints (Deferred)
+
+The following endpoints are documented for activation upon onboarding an approved marketplace payment provider (e.g. Razorpay Route):
+- `POST /api/v1/payments/orders` (Centralized gateway checkout order creation).
+- `POST /api/v1/payments/webhooks/gateway` (Inward payment gateway webhook listener).
+- `POST /api/v1/admin/settlements/route-batch` (Automated split settlement batch execution).
+- `GET /api/v1/admin/ledger/accounts` (Platform Master Chart of Accounts).
+- `GET /api/v1/admin/ledger/transactions` (Platform double-entry journal transactions).
+- `GET /api/v1/admin/ledger/transactions/{transactionGroupId}/entries` (Balanced journal lines).

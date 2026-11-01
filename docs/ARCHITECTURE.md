@@ -2,7 +2,7 @@
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
-**Status:** Database Design Freeze Candidate Baseline (54-Table Architecture)  
+**Status:** Database Design Freeze Candidate Baseline (47 Physical Tables: 45 MVP Domain + 2 Infra, 8 Future-Phase)  
 
 ---
 
@@ -85,8 +85,11 @@ backend/src/main/java/com/vehiclerental/
 ├── contribution/            # Contributor applications, agreements, withdrawal requests
 ├── booking/                 # Bookings, booking_holds, extensions, cancellation
 ├── inspection/              # Handover/return inspections, incidents, inspection_media
-├── payment/                 # Orders, transactions, security_deposits, deposit_deductions, refunds, webhooks
-├── payout/                  # Payout_methods, contributor_payables, partner_commissions, settlements, ledger
+├── payment/                 # Partner payment profiles, rental payment demands, customer submissions, verification
+├── deposit/                 # Security deposits, damage deductions, partner direct refunds
+├── contribution/            # Contributor applications, agreements, withdrawal requests, contributor_payables
+├── booking/                 # Bookings, booking_holds, extensions, cancellation
+├── inspection/              # Handover/return inspections, incidents, inspection_media
 ├── review/
 ├── support/
 └── notification/
@@ -94,33 +97,32 @@ backend/src/main/java/com/vehiclerental/
 
 ---
 
-## 3. Core Module Boundaries & Ownership (52 Domain Tables)
+## 3. Core Module Boundaries & Ownership (45 MVP Domain Tables + 2 Infra = 47 Total)
 
 | Module | Physical Tables Owned | Core Domain Responsibilities |
 |---|---|---|
-| **auth** | `refresh_tokens` | Registration, login, JWT issuance, token rotation/revocation, password reset. |
-| **user** | `users`, `roles`, `user_roles`, `addresses`, `customer_profiles`, `contributor_profiles`, `identity_verifications`, `driver_licences` | User identity, profile management, additive role grants, unified addresses, KYC verification logs. |
-| **partner** | `partner_profiles`, `partner_documents`, `partner_locations`, `delivery_zones` | Partner business onboarding, verification gating, compliance documents, physical partner hubs, doorstep delivery zones. |
-| **vehicle** | `vehicles`, `vehicle_documents`, `vehicle_images`, `vehicle_pricing`, `pickup_locations`, `vehicle_availability_blocks`, `vehicle_custody_events`, `cities` | Fleet catalog (individual & partner business legal owners, operational manager), compliance documents, pricing schedules, turnaround buffers, blackout blocks, and the 8-permutation typed custody event ledger. |
-| **contribution** | `vehicle_contribution_applications`, `contribution_agreements`, `contribution_agreement_events`, `vehicle_withdrawal_requests` | Contributor onboarding, bilateral agreements, fixed-fee terms, immutable versioning, and withdrawal requests. |
-| **booking** | `booking_holds`, `bookings`, `booking_status_events`, `booking_extensions` | 15-minute reservation locks (pessimistic `SELECT FOR UPDATE`), master booking contracts, extensions, cancellations, and operational status events. |
-| **inspection** | `inspections`, `inspection_media`, `incidents` | Pre-rental and post-rental vehicle condition reports, photographic evidence, damage and breakdown incident claims. |
-| **payment** | `payment_orders`, `payment_transactions`, `security_deposits`, `deposit_deductions`, `payment_webhook_events`, `refunds` | Payment gateway orders, transaction attempts, refundable security deposit liabilities, dispute arbitration, idempotent webhooks, late webhook recovery / auto-refunds, and retryable refunds. |
-| **payout** | `contributor_payables`, `partner_commissions`, `payout_methods`, `settlements`, `ledger_accounts`, `ledger_transactions`, `ledger_entries`, `platform_commission_rules` | Commission rules, partner-contributor contractual obligation tracking (`contributor_payables` with UTR evidence), partner net disbursements, tokenized payout methods, and normalized double-entry general ledger. |
-| **review** | `reviews` | Booking-bound customer ratings and reviews. |
-| **support** | `support_tickets`, `support_ticket_messages` | Threaded customer, partner, and contributor support and dispute tickets. |
-| **notification**| `notifications` | Transactional notifications across in-app, SMS, and email channels. |
-| **common/outbox**| `outbox_events`, `audit_logs`, `shedlock`, `flyway_schema_history` | Transactional outbox engine, security audit logs, distributed locks, and migration tracking. |
+| **auth & user** | `users`, `roles`, `user_roles`, `refresh_tokens`, `addresses`, `customer_profiles`, `partner_profiles`, `partner_documents`, `contributor_profiles`, `driving_licences`, `kyc_verifications` (11) | User identity, registration, JWT issuance/rotation, profile management, partner commercial documents, unified addresses, driving licence & KYC verifications. |
+| **location** | `cities`, `partner_hubs`, `pickup_locations` (3) | Geographic operating zones, partner physical service hubs, pickup and return points. |
+| **vehicle** | `vehicles`, `vehicle_documents`, `vehicle_pricing_profiles`, `vehicle_images`, `vehicle_features`, `vehicle_maintenance_blocks` (6) | Fleet catalog (individual & partner business legal owners, operational manager), compliance documents (RC, insurance), pricing profiles, photos, feature tags, maintenance blocks. |
+| **custody** | `vehicle_custody_events` (1) | Generic vehicle custody tracking ledger supporting all 8 canonical physical handover permutations. |
+| **contribution** | `contributor_vehicle_applications`, `contribution_agreements`, `contribution_agreement_events`, `vehicle_withdrawal_requests` (4) | Contributor vehicle submissions, bilateral agreements, fixed payout terms, lifecycle audit events, withdrawal requests. |
+| **booking & inspection** | `booking_holds`, `bookings`, `booking_status_events`, `booking_extensions`, `inspections`, `inspection_media`, `incidents` (7) | 15-minute temporary reservation locks, master booking contracts, extensions, pre/post inspection logs, condition media, damage incidents. |
+| **payment & settlement** | `partner_payment_profiles`, `rental_payment_demands`, `rental_payment_submissions`, `security_deposits`, `deposit_deductions`, `security_deposit_refunds`, `contributor_payables` (7) | Partner payment profiles (UPI QR/ID/Link/Cash), payment demands, customer UTR submissions, manual partner verification, deposit custody, evidence-based deductions, direct partner refunds, contributor payable tracking. |
+| **support & communication** | `reviews`, `support_tickets`, `support_ticket_messages`, `notifications` (4) | Booking-bound customer reviews, support ticketing, in-app/SMS/email notifications. |
+| **common / infrastructure** | `outbox_events`, `audit_logs`, `shedlock`, `flyway_schema_history` (2 domain + 2 infra = 4) | Transactional outbox engine, security audit logs, ShedLock distributed locks, Flyway schema history. |
+
+> [!NOTE]
+> **Future-Phase Marketplace Gateway Module (8 Tables):** `payment_webhook_events`, `partner_commissions`, `payout_methods`, `settlements`, `ledger_accounts`, `ledger_transactions`, `ledger_entries`, `platform_commission_rules` are formally documented as Future-Phase specifications to be activated upon commercial marketplace gateway onboarding.
 
 ---
 
 ## 4. Decoupled Inter-Module Communication
 
 1. **Spring Application Events:**
-   - Modules publish strongly-typed domain events (e.g., `BookingConfirmedEvent`, `InspectionCompletedEvent`, `DamageClaimSubmittedEvent`) via `ApplicationEventPublisher`.
+   - Modules publish strongly-typed domain events (e.g., `BookingConfirmedEvent`, `PaymentSubmittedEvent`, `PaymentVerifiedEvent`, `InspectionCompletedEvent`) via `ApplicationEventPublisher`.
    - Dependent modules consume events using `@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)` to decouple synchronous dependencies and prevent distributed transaction failure loops.
 2. **Transactional Outbox Pattern:**
-   - External network interactions (Razorpay payment creation/refunds, Cloudinary media processing, email/SMS dispatch) must NOT execute directly inside database transaction boundaries.
+   - External network interactions (Cloudinary media processing, email/SMS dispatch, external notifications) must NOT execute directly inside database transaction boundaries.
    - The originating service inserts an `outbox_events` record in the same local database transaction as the domain state change.
    - An asynchronous scheduled outbox dispatcher polls pending events, executes the external call with exponential backoff retries, and marks events `PROCESSED` or `FAILED`.
    - Guarantees at-least-once delivery and resilience against external API downtime.
@@ -135,9 +137,10 @@ backend/src/main/java/com/vehiclerental/
      SELECT id FROM vehicles WHERE id = :vehicleId FOR UPDATE;
      ```
    - Availability validation executes within this locked transaction, verifying zero overlap across confirmed bookings, active unexpired booking holds (`status = 'ACTIVE' AND expires_at > NOW()`), maintenance blocks, and turnaround buffers (`turnaround_buffer_minutes`).
-2. **Hold Isolation & Late Webhook Recovery:**
+2. **Hold Isolation & Partner Verification Protocol:**
    - Creating a hold inserts into `booking_holds`; it **does NOT create an incomplete record in `bookings`**.
-   - If a successful payment webhook arrives after a hold has expired:
+   - Submitting payment details inserts into `rental_payment_submissions` (`SUBMITTED_FOR_VERIFICATION`) and preserves the hold lock during the verification window.
+   - Only partner verification converts the hold and creates a `CONFIRMED` booking. Unverified submissions never confirm bookings.
      - If the vehicle interval remains completely available, the system recovers and confirms the booking.
      - If the interval has been reserved by another customer in the interim, the platform **automatically triggers a 100% gateway refund**.
 

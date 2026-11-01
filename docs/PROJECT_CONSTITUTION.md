@@ -2,7 +2,7 @@
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
-**Status:** Database Design Freeze Candidate Baseline (54-Table Architecture)  
+**Status:** Database Design Freeze Candidate Baseline (47 Physical Tables: 45 MVP Domain + 2 Infra, 8 Future-Phase)  
 
 This document is the governing contract for all human contributors, engineering leads, and AI coding agents. Read it before making changes.
 
@@ -60,51 +60,48 @@ This document is the governing contract for all human contributors, engineering 
   ```sql
   SELECT id FROM vehicles WHERE id = :id FOR UPDATE;
   ```
+### 3.2 Booking Hold & Partner-Direct Payment Invariants
+- A vehicle cannot have overlapping confirmed bookings or active holds. All operations modifying availability must acquire a pessimistic row lock:
+  ```sql
+  SELECT id FROM vehicles WHERE id = :id FOR UPDATE;
+  ```
 - Turnaround buffers (`turnaround_buffer_minutes`) must be enforced before and after every booking and maintenance blackout block.
-- **Hold Independence:** A booking hold (`booking_holds`) is a temporary 15-minute slot reservation. **Creating a booking hold must NOT create an incomplete or draft record in the `bookings` table.**
-- **Late Payment Webhook Protocol:** If a payment webhook confirms capture after hold expiration:
-  - Fresh availability check is executed under `SELECT ... FOR UPDATE`.
-  - Recovers booking as `CONFIRMED` if the requested interval plus turnaround buffer remains completely available.
-  - **Automatically triggers a 100% gateway refund** if the interval has been reserved by another customer in the interim.
-  - All operations are completely idempotent against duplicate webhook delivery (`payment_webhook_events`).
+- **Hold Independence:** A booking hold (`booking_holds`) is a temporary reservation lock (configurable default: 15 minutes). **Creating a booking hold must NOT create an incomplete or draft record in the `bookings` table.**
+- **Partner-Direct Payment Verification Gate:**
+  - In the MVP, the customer pays the managing rental partner directly (via partner's UPI QR, UPI ID, external payment link, or cash at pickup if enabled).
+  - Customer submits payment reference details creating a `rental_payment_submissions` record in `SUBMITTED_FOR_VERIFICATION` status.
+  - **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as successful or confirm a booking.**
+  - **ONLY verified partner confirmation** (`POST /api/v1/partner/payment-submissions/{id}/verify`) can transition payment status to `VERIFIED` and convert the hold to a `CONFIRMED` master booking.
+  - If the partner rejects the submission or the verification window expires without submission, the hold expires and inventory is freed. Late or unmatched payments are handled through an explicit partner refund exception workflow; the system never silently confirms bookings or retains indefinite inventory locks.
+  - If pay-at-pickup is authorized by the partner, the booking may transition to `CONFIRMED` with payment marked `PENDING_AT_PICKUP`, but vehicle handover is strictly barred until payment and deposit collection are verified by the partner.
 
-### 3.3 Financial & Contributor Settlement Invariants
-- **Separation of Financial Models:**
-  1. **Platform General Ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`):** Tracks actual platform cash, customer refundable liabilities, platform commission revenue, net partner payables, and partner receivables. Every journal transaction group balances to zero ($\sum \text{Debits} = \sum \text{Credits}$).
-  2. **Partner-Contributor Obligation Model (`contributor_payables`):** Tracks the rental partner's contractual debt to the contributor. Stored separately from the platform general ledger.
-  3. **Direct Settlement Evidence (Approach A Baseline):** Direct payments by partners to contributors are **never represented as platform cash disbursements**. The partner logs the bank UTR number, payment date, and receipt attachment.
-- **Customer Payment Collection & Settlement Demarcation:**
-  - The Platform Operating Entity is the digital marketplace **Merchant of Record (MoR)**, holder of the customer security deposit as a **Refundable Liability**, sole entity responsible for issuing customer refunds via gateway APIs, and contractual debtor for partner net rental proceeds (`PARTNER_PAYABLE`).
-  - Payment gateway integration is **method-independent** and abstracted behind service interfaces.
-  - Direct partner-to-contributor settlement under Approach A governs **only** the private bilateral partner-contributor agreement and does NOT establish compliance for the customer payment collection and partner rental payout flow.
-- **Single Lump-Sum Contributor Settlement Invariant:**
-  - Each completed booking generates exactly one indivisible contributor payable. Partial payments or installment disbursements are prohibited at domain and database levels.
-  - Direct settlement evidence (Bank UTR, date, proof document) becomes strictly immutable once transitioned to `SETTLED_BY_PARTNER`.
-- **Post-Payout Reversal & Partner Receivable (`PARTNER_RECEIVABLE`):**
-  - When an incorrect credit or damage deduction is reversed after partner payout disbursement, the platform debits `PARTNER_RECEIVABLE` (Asset) and credits `REFUND_PAYABLE`, allowing immediate customer refund without negative liability balances.
-  - Outstanding partner receivables are recovered via automatic offset against subsequent payout batches or direct partner repayment.
-- The platform must **never silently assume debtor liability** for partner obligations.
-- **Approach B (Razorpay Route):** Remains a future enhancement marked **PENDING** partner onboarding, KYC workflows, and RBI payment aggregator regulatory review.
-- **Contributor Price Floor:** Partner-configured listing rates for contributor vehicles must enforce the mathematical profitability floor:
-  $$\text{Base Rental Price} \ge \frac{\text{Contributor Fixed Fee} + \text{Partner Min Margin} + \text{Allocable Fixed Costs}}{1 - (\text{Commission Rate} + \text{Gateway Fee Rate} + \text{Effective Tax Rate})}$$
-- **No Hardcoded GST Deductions:** Tax calculations must never be hardcoded as a simple percentage deduction from rental revenue. Taxable rental amount, platform commission, gateway fees, contributor compensation, partner margin, and discount funding must be cleanly separated. Tax rules are configurable and marked pending professional validation.
-- Promotional discounts below the floor require an authorized override that explicitly debits `partner_discount_subsidy` from partner earnings, keeping contributor compensation intact.
-- Confirmed customer bookings strictly supersede contributor withdrawal notices. Vehicle handover back to the contributor occurs only after the final confirmed booking ends.
-- Cancelled bookings do not generate contributor payouts unless the signed agreement explicitly specifies a `cancellation_compensation_rate`.
+### 3.3 Financial & Contributor Settlement Invariants (Partner-Direct Model)
+- **Zero Platform Cash Handling in MVP:**
+  - The platform does **not** collect, hold, escrow, split, or disburse customer rental money or security deposits.
+  - The rental partner is the customer-facing rental service provider and direct payee for all bookings on vehicles they manage.
+  - The platform does not deduct commission from customer payments in the MVP. Any future platform monetization or subscription model is a separate business flow.
+- **Partner Payment Profiles:** Each verified partner maintains a `partner_payment_profiles` record detailing their public-facing payee name, UPI ID, UPI QR code image, accepted payment methods, and pay-at-pickup configuration.
+- **Security Deposit Direct Custody:**
+  - The rental partner directly receives, holds, and refunds customer security deposits.
+  - Security deposits are tracked in `security_deposits` as distinct records from rental payments.
+  - The platform monitors deposit obligations, partner damage deduction claims (`deposit_deductions`), and partner-executed direct refunds (`security_deposit_refunds`), but does not execute external bank transfers.
+  - **No Automatic Approval:** A customer non-response does **never** automatically approve a partner's damage deduction claim. Unresolved disputes require Admin review.
+- **Contributor Compensation (Approach A Direct Settlement):**
+  - The rental partner is the sole legal debtor for the contributor's agreed fixed compensation per eligible completed booking.
+  - The partner pays the contributor directly outside the platform via external bank transfer (NEFT/IMPS/UPI).
+  - The platform tracks the obligation in `contributor_payables` (lump-sum per booking) with mandatory Bank UTR, date, and receipt proof.
+  - Contributor payments generate **zero entries** in any platform general ledger.
+- **Future-Phase Marketplace Gateway Boundary:**
+  - Integration with an approved marketplace payment provider (e.g. Razorpay Route) for automated collection, linked partner accounts, split disbursements, and platform general ledger accounting is deferred to a future phase, subject to commercial, legal, and compliance gates.
 
-### 3.4 Security Deposit & Dispute Invariants
-- Security deposits are collected upfront as separate line items and recorded as **refundable customer liabilities**, never as platform revenue, taxable turnover, or escrow.
-- Deductions from security deposits require documented inspection evidence (photos, odometer, fuel readings) and approved reason codes.
-- Undisputed portions of a security deposit must be refunded to the customer immediately.
-- **No Automatic Approval:** **A disputed damage claim is NEVER automatically approved merely because a 48-hour response window expires.** Disputed claims require Admin arbitration; non-responsive claims require Admin verification before deduction.
-
-### 3.5 Operational vs. Financial Decoupling
-- Operational booking fulfillment (vehicle pickup, rental execution, return inspection, operational completion) is strictly decoupled from financial settlement (deposit release, damage disputes, partner disbursements, contributor payouts).
+### 3.4 Operational vs. Financial Decoupling
+- Operational booking fulfillment (vehicle pickup, rental execution, return inspection, operational completion) is strictly decoupled from financial settlement (deposit refund, damage dispute resolution, contributor payout).
 - An operationally returned vehicle must transition to **`COMPLETED` immediately** upon return inspection sign-off to unblock fleet operations and next rentals.
 
-### 3.6 Architecture & Accounting Invariants
+### 3.5 Architecture & Physical Schema Baseline
 - Cross-module side effects must use Spring Application Events (`@TransactionalEventListener(AFTER_COMMIT)`) and the Transactional Outbox Pattern (`outbox_events`).
-- The confirmed pre-freeze baseline consists of **54 proposed physical tables** (52 application-domain + 2 infrastructure). No migrations or actual database schemas have been generated yet.
+- **Physical Schema Baseline:** Exactly **47 physical MySQL tables for MVP** (45 application-domain tables + 2 infrastructure-managed tables: `shedlock`, `flyway_schema_history`). An additional 8 tables are designated as Future-Phase Marketplace Gateway specifications (55 total cataloged entities).
+- No migrations, JPA entities, or actual database schemas have been generated yet.
 
 ---
 
@@ -112,10 +109,12 @@ This document is the governing contract for all human contributors, engineering 
 
 The following operational values are configurable defaults, never hardcoded into application code:
 - Booking hold duration: **15 minutes**.
+- Payment verification window: **60 minutes** (configurable period for partner to verify submitted UTR).
 - Car turnaround buffer: **60 minutes**.
 - Bike turnaround buffer: **30 minutes**.
 - Scooter turnaround buffer: **30 minutes**.
 - Contributor settlement mode: **Direct partner payment (Approach A)**.
 - Vehicle withdrawal notice: **Recommended 7 days**, subject to confirmed customer bookings.
 - Deposit dispute response window: **48 hours**.
+- Overdue return grace period: **30 minutes**.
 - Overdue return grace period: **30 minutes**.

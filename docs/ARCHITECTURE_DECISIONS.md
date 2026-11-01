@@ -2,51 +2,52 @@
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh  
-**Status:** Database Design Freeze Candidate Baseline (54-Table Architecture)  
+**Status:** Database Design Freeze Candidate Baseline (47 Physical Tables: 45 MVP Domain + 2 Infra, 8 Future-Phase)  
 
 > [!IMPORTANT]
 > **Pre-Implementation Notice:** All decisions below govern the **proposed architecture and database design**. No application code, JPA entities, SQL DDL scripts, or Flyway migrations have been generated yet. Formal implementation begins only after final Product Owner approval.
 
 ---
 
-## ADR-001: Upfront Rental Payment and Refundable Security Deposit Collection
+## ADR-001: Upfront Rental Payment and Refundable Security Deposit Collection (Partner-Direct Custody)
 
 ### Context
 Vehicle rentals require security deposits to cover potential damage, fuel discrepancies, traffic fines, and overdue returns. In India, retail payment methods (UPI and domestic debit cards) do not universally support multi-day pre-authorization holds without recurring e-mandates.
 
 ### Decision
-1. **Method-Independent Upfront Collection:** The platform collects rental charges and security deposits upfront in a single payment order while keeping the underlying payment architecture method-independent.
-2. **Refundable Customer Liability Accounting:** The collected security deposit is recorded as a **refundable customer liability**, never as platform revenue, partner turnover, or taxable income.
-3. **Non-Escrow Designation:** The platform's internal double-entry ledger tracks deposit liabilities and must not be described as a third-party escrow account.
+1. **Partner-Direct Collection:** The rental partner who manages the vehicle directly collects the rental charges and refundable security deposit from the customer via the partner's verified UPI QR code, UPI ID, external payment link, or cash at pickup (where enabled).
+2. **Refundable Customer Liability in Partner Custody:** The security deposit is collected and held directly by the rental partner as a **refundable customer liability**. It is never collected, escrowed, or held by the platform.
+3. **Non-Escrow Designation:** The platform acts strictly as an operational record-keeper and dispute arbitrator; it does not operate an escrow or trust account.
 4. **Documented Deductions & Review Process:** Deductions from security deposits are permitted only with approved inspection evidence (photos, odometer, fuel readings).
-5. **No Automatic Claim Approval:** **A disputed damage claim is NEVER automatically approved merely because a 48-hour response window expires.** Disputed claims require Admin arbitration. If a customer is non-responsive after 48 hours, an Admin must verify the evidence before any deduction is processed.
-6. **Immediate Release of Undisputed Balances:** Any uncontested portion of a security deposit is refunded immediately to the customer via payment gateway refund APIs.
+5. **No Automatic Claim Approval:** **A disputed damage claim is NEVER automatically approved merely because a 48-hour response window expires.** Disputed claims require Admin arbitration. If a customer is non-responsive after 48 hours, an Admin must verify the evidence before any deduction is approved.
+6. **Partner Refund Execution:** The rental partner is solely responsible for executing deposit refunds directly to the customer outside the platform. The platform records the refund amount, transaction reference (UTR), date, and evidence.
 
 ---
 
-## ADR-002: Relational Schema & Hold Independence
+## ADR-002: Relational Schema, Hold Independence, and Verification Locking
 
 ### Context
-Previous proposals lacked explicit separation between temporary reservations and confirmed bookings, risking dirty reads and database bloat from abandoned checkout sessions.
+Previous proposals lacked explicit separation between temporary reservations and confirmed bookings, risking dirty reads and database bloat from abandoned checkout sessions. Furthermore, manual payment verification requires preserving inventory locks while the partner verifies the customer's payment.
 
 ### Decision
 1. **Hold Independence:** `booking_holds` is an independent 15-minute temporary reservation lock acquired under pessimistic `SELECT FOR UPDATE` locking.
-2. **No Incomplete Booking Records:** Creating a hold **does NOT insert an incomplete or draft record into the `bookings` table**. The `bookings` table receives records only upon verified payment capture.
-3. **Delayed Webhook Protocol:** If a payment webhook arrives after hold expiration, the system executes an availability check under `SELECT FOR UPDATE`. It recovers the booking if available, or automatically triggers a 100% gateway refund if the interval was reserved by another customer.
+2. **No Incomplete Booking Records:** Creating a hold **does NOT insert an incomplete or draft record into the `bookings` table**. The `bookings` table receives records only upon verified payment confirmation.
+3. **Verification Window Extension:** When a customer submits payment proof (UTR / receipt) before the 15-minute hold expires, the hold status transitions to `VERIFICATION_PENDING` and its TTL is extended by a configurable verification window (e.g., 60 minutes), preserving inventory locking while the partner verifies the transfer.
+4. **Expired Hold Protocol:** If a hold expires without payment submission, or if the partner rejects the payment submission, the hold transitions to `EXPIRED` or `RELEASED`, instantly freeing inventory. If a customer paid late or unmatched after expiration, an explicit partner exception/refund workflow is initiated without auto-confirming the booking.
 
 ---
 
 ## ADR-003: Contributor Profitability Price Floor Engine & Partner Discount Model
 
 ### Context
-In contributor-owned vehicles, the contributor is contractually entitled to an agreed fixed payout per completed eligible booking. If a partner discounts the vehicle below the total of contributor payout + platform commission + taxes + gateway fees, a financial deficit occurs.
+In contributor-owned vehicles, the contributor is contractually entitled to an agreed fixed payout per completed eligible booking. If a partner discounts the vehicle below the total of contributor payout + taxes + operational expenses, a financial deficit occurs.
 
 ### Decision
 1. **Profitability Floor Validation:** The backend enforces a minimum listing price for contributor vehicles:
-   $$\text{Base Rental Price} \ge \frac{\text{Contributor Fixed Fee} + \text{Partner Min Margin} + \text{Allocable Fixed Costs}}{1 - (\text{Platform Commission \%} + \text{Gateway Fee \%} + \text{Effective Tax \%})}$$
-2. **Clean Separation of Components:** The system cleanly separates taxable rental amount, platform commission, gateway fees, fixed contributor compensation, partner margin, and discount funding.
+   $$\text{Base Rental Price} \ge \frac{\text{Contributor Fixed Fee} + \text{Partner Min Margin} + \text{Allocable Fixed Costs}}{1 - (\text{Effective Tax \%})}$$
+2. **Clean Separation of Components:** The system cleanly separates rental amount, security deposit, fixed contributor compensation, partner margin, and discount funding.
 3. **No Hardcoded GST Deductions:** Tax calculations are **not** hardcoded as a simple percentage deduction from rental revenue; they are configurable and marked pending professional tax validation.
-4. **Partner-Funded Discount Subsidies:** If a partner offers a promotional rate below the floor, an authorized override debits the partner's account balance (`partner_discount_subsidy`) without reducing contributor compensation.
+4. **Partner-Funded Discount Subsidies:** If a partner offers a promotional rate below the floor, the partner absorbs the promotional discount (`partner_discount_subsidy`) without reducing contributor compensation.
 
 ---
 
@@ -58,7 +59,7 @@ Direct synchronous inter-module method calls create tight circular coupling and 
 ### Decision
 1. **Spring Application Events:** Cross-module communication uses strongly-typed domain events published via `ApplicationEventPublisher`.
 2. **Transactional Event Listeners:** Downstream modules consume events via `@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)`.
-3. **Transactional Outbox Pattern:** All external network interactions (Razorpay payment creation/refunds, Cloudinary uploads, notification dispatch) write an event record into `outbox_events` in the same local transaction as the domain state change.
+3. **Transactional Outbox Pattern:** All external network interactions (Cloudinary uploads, notification dispatch, SMS/Email) write an event record into `outbox_events` in the same local transaction as the domain state change.
 4. **Outbox Dispatcher:** A background worker polls pending outbox events, dispatches them with exponential backoff retries, and records processing status.
 
 ---
@@ -73,7 +74,7 @@ Under concurrent checkout requests, multiple transactions checking availability 
    ```sql
    SELECT id FROM vehicles WHERE id = :vehicleId FOR UPDATE;
    ```
-2. **Composite Availability Verification:** Within the locked transaction, verify zero overlapping intervals across confirmed bookings, active unexpired holds (`booking_holds.status = 'ACTIVE' AND expires_at > NOW()`), maintenance blocks, and operational turnaround buffers.
+2. **Composite Availability Verification:** Within the locked transaction, verify zero overlapping intervals across confirmed bookings, active unexpired holds (`booking_holds.status IN ('ACTIVE', 'VERIFICATION_PENDING') AND expires_at > NOW()`), maintenance blocks, and operational turnaround buffers.
 
 ---
 
@@ -89,34 +90,31 @@ Clustered deployments must not execute duplicate background jobs (expiring stale
 
 ---
 
-## ADR-007: Normalized Append-Only Double-Entry General Ledger
+## ADR-007: Normalized Append-Only Double-Entry General Ledger [STATUS: DEFERRED TO FUTURE PHASE]
 
 ### Context
-Mutable balance columns (`wallet_balance += amount`) cause lost updates, race conditions, and an un-auditable paper trail. Furthermore, mixing partner-to-contributor obligations into the platform's general ledger falsely represents external bank transfers as platform cash disbursements.
+In earlier platform-collection designs, a 3-table double-entry ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`) was proposed to track platform cash flows, gateway clearing, and partner payables. Under the MVP Partner-Direct collection model, customer funds do not flow through platform accounts.
 
 ### Decision
-1. **Normalized 3-Table Ledger:** The platform general ledger is implemented across three physical tables:
-   - `ledger_accounts`: Chart of Accounts Master (`account_code`, `category`, `normal_balance`).
-   - `ledger_transactions`: Journal headers (`transaction_group_id`, `reference_type`, `reference_id`, `posted_at`).
-   - `ledger_entries`: Journal lines (`transaction_id FK`, `account_id FK`, `debit_amount`, `credit_amount`).
-2. **Balance Guarantees:** Every transaction header strictly balances ($\sum \text{Debits} = \sum \text{Credits}$). Corrections execute exclusively via reversal entries.
-3. **Platform Scope Only:** The platform general ledger records **only** actual platform cash and liabilities (`GATEWAY_CLEARING`, `CUSTOMER_REFUNDABLE_LIABILITY`, `CUSTOMER_RENTAL_CLEARING`, `PLATFORM_COMMISSION_REVENUE`, `PARTNER_PAYABLE`, `REFUND_PAYABLE`, `SETTLEMENT_CLEARING`). Direct partner-to-contributor payments are completely excluded from platform cash accounting.
+1. **Deferred to Future Phase:** Because the platform does not collect, hold, or disburse customer rental money or security deposits in the MVP, the 3-table platform double-entry general ledger is **deferred to Future Phase** (Marketplace Payment Gateway Integration).
+2. **Operational Audit Trail for MVP:** The platform maintains an operational audit trail via `rental_payment_demands`, `rental_payment_submissions`, `security_deposits`, `security_deposit_refunds`, `contributor_payables`, and `audit_logs`.
+3. **Zero Platform Cash Guarantee:** External partner-to-customer and partner-to-contributor transfers are **never** represented as platform cash movements.
 
 ---
 
-## ADR-008: Marketplace Payments & Contributor Contractual Settlement Architecture
+## ADR-008: Marketplace Payments & Contributor Contractual Settlement Architecture (Approach A)
 
 ### Context
 Marketplace platforms in India cannot arbitrarily collect and distribute third-party funds without regulatory compliance. The contributor receives an agreed fixed payment per eligible completed booking under a commercial contract with the rental partner. The platform must not silently become the contributor's legal debtor.
 
 ### Decision
 1. **Contractual Principle:** The rental partner is the sole legal debtor for the contributor's fixed payment.
-2. **Approach A (Direct Partner Settlement - Recommended MVP Baseline):**
+2. **Approach A (Direct Partner Settlement - Confirmed MVP Baseline):**
    - The partner settles the contributor directly via bank transfer (NEFT/IMPS/UPI) outside the platform.
    - The platform tracks the obligation in `contributor_payables`, stores the partner's payment reference/UTR, date, and receipt attachment, tracks settlement status, allows contributor confirmation or dispute, and provides administrative oversight.
    - Direct payments are **never recorded as platform cash disbursements**. The platform assumes zero debtor liability.
-3. **Approach B (Platform-Facilitated Settlement via Razorpay Route - PENDING Legal/Provider Validation):**
-   - Remains a future enhancement subject to partner linked-account onboarding, KYC, and RBI payment aggregator compliance review.
+3. **Single Lump-Sum Model:** Enforce one complete direct settlement per eligible booking. Partial payments are prohibited.
+4. **Approach B (Platform-Facilitated Settlement via Marketplace Gateway):** Deferred to Future Phase pending partner linked-account onboarding and regulatory validation.
 
 ---
 
@@ -165,15 +163,16 @@ Connecting operational booking completion with deposit refunds, damage claims, a
 
 ---
 
-## ADR-012: Database Design Freeze Baseline (54 Proposed Tables)
+## ADR-012: Database Design Freeze Baseline (47 Proposed Physical Tables)
 
 ### Context
-Full normalization of the double-entry general ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`) requires expanding the physical schema count.
+Following the transition to Partner-Direct payment collection, platform-clearing, gateway webhook, and platform general ledger tables are moved to Future Phase.
 
 ### Decision
-1. **Authoritative Proposed Count:** Freeze the physical database schema at exactly **54 physical tables**:
-   - 52 Application-Domain Tables
-   - 2 Infrastructure-Managed Tables (`shedlock`, `flyway_schema_history`)
+1. **Authoritative Proposed Count:** Freeze the physical database schema at exactly **47 physical tables**:
+   - **45 Application-Domain Tables** across Modules 1 through 8.
+   - **2 Infrastructure-Managed Tables** (`shedlock`, `flyway_schema_history`).
+   - **8 Future-Phase Tables** cataloged for future marketplace gateway integration (55 total cataloged entities).
 2. **Pre-Implementation Status:** No database tables or migrations have been created yet.
 
 ---
@@ -186,6 +185,7 @@ Hardcoding operational parameters into application code prevents business tuning
 ### Decision
 1. **Configurable Defaults:** The following operational parameters are externalized in configuration/database settings:
    - Booking hold TTL: 15 minutes.
+   - Payment verification window: 60 minutes.
    - Car turnaround buffer: 60 minutes.
    - Bike turnaround buffer: 30 minutes.
    - Scooter turnaround buffer: 30 minutes.
@@ -211,47 +211,98 @@ The catalog must support individual vehicle owners, partner business legal owner
 
 ---
 
-## ADR-015: Partner Registration Verification Gating & Late Webhook Protocol
+## ADR-015: Partner Registration Verification Gating & Manual Verification Protocol
 
 ### Context
-Unverified partner applicants must not access fleet management or customer rentals. In addition, payments arriving after hold expiration must be safely reconciled.
+Unverified partner applicants must not access fleet management or customer rentals. In addition, payments submitted by customers must be verified before booking confirmation.
 
 ### Decision
-1. **Partner Verification Gate:** Users with `partner_profiles.verification_status != 'VERIFIED'` are blocked by `@PreAuthorize` evaluators from registering fleet inventory, accepting contributed vehicles, or fulfilling bookings.
-2. **Late Webhook Protocol:** If a payment webhook arrives after hold expiration:
-   - Fresh availability check is executed under `SELECT ... FOR UPDATE`.
-   - Recovers booking as `CONFIRMED` if the requested interval plus turnaround buffer remains completely available.
-   - Automatically triggers a 100% gateway refund if the interval was reserved by another customer in the interim.
-   - All operations are completely idempotent against duplicate webhook delivery (`payment_webhook_events`).
+1. **Partner Verification Gate:** Users with `partner_profiles.verification_status != 'VERIFIED'` are blocked by `@PreAuthorize` evaluators from registering fleet inventory, configuring payment profiles, accepting contributed vehicles, or fulfilling bookings.
+2. **Manual Payment Verification Gate:** Only verified partners managing the vehicle can verify or reject customer payment submissions. A customer-uploaded screenshot or UTR never auto-confirms a payment.
 
 ---
 
-## ADR-016: Customer Payment Collection, Deposit Custody, and Partner Settlement Liability Architecture
+## ADR-016: Platform Merchant-of-Record Model [STATUS: SUPERSEDED BY ADR-018]
 
-### Context
-Clear legal and financial demarcations are required for customer checkout collections, refundable deposit custody, customer refund obligations, and partner rental proceeds disbursements. Direct partner-to-contributor settlement under Approach A must not be conflated with customer-facing payment flows.
-
-### Decision
-1. **Merchant of Record (MoR):** The Platform Operating Entity acts as the digital marketplace MoR for customer transactions, contracting with RBI-authorized payment aggregators, collecting total checkout payments, and issuing platform service tax invoices. *(Subject to pending legal validation regarding GST Section 9(5) E-Commerce Operator classification).*
-2. **Deposit Custody & Liability:** Security deposits are held by the Platform Operating Entity strictly as a **Refundable Balance Sheet Liability** (`CUSTOMER_REFUNDABLE_LIABILITY`). Deposits are never treated as platform revenue or working capital.
-3. **Refund Responsibility:** The Platform Operating Entity bears sole operational responsibility for issuing customer refunds directly to the original payment instrument via payment gateway APIs. Partners never refund customers directly.
-4. **Partner Rental Proceeds Settlement:** The Platform Operating Entity is contractually liable to disburse net rental proceeds (`PARTNER_PAYABLE`) to verified partners on a scheduled batch cycle (T+2) via payout APIs (`SETTLEMENT_CLEARING`).
-5. **Method-Independent Gateway Architecture:** Payment gateway integrations are abstracted behind provider-agnostic interfaces (`PaymentGatewayClient`, `PayoutGatewayClient`). The schema, state machines, and double-entry ledger remain decoupled from proprietary vendor mechanisms.
-6. **Separation from Approach A:** Direct partner-to-contributor settlement under Approach A applies strictly to the bilateral partner-contributor agreement and does NOT establish compliance for the customer payment collection and partner payout flow.
+### Context & Status
+*This ADR previously proposed the platform acting as Merchant of Record with a centralized Razorpay account, upfront platform deposit custody, and T+2 partner payouts. It has been **SUPERSEDED** by ADR-018 (Partner-Direct Payment Collection) for the MVP release.*
 
 ---
 
-## ADR-017: Contributor Settlement Model & Post-Payout Reversal Recovery via Partner Receivables
+## ADR-017: Contributor Settlement Model & Bilateral Dispute Mechanics (Approach A)
 
 ### Context
-A decision is required between a single immutable lump-sum settlement model vs. introducing multi-event contributor settlement history tables. Additionally, balanced double-entry accounting mechanics are required when an incorrect partner credit has already been paid out.
+A decision is required between a single immutable lump-sum settlement model vs. introducing multi-event contributor settlement history tables. Additionally, bilateral settlement rules govern partner-contributor obligations.
 
 ### Decision
-1. **Selected Contributor Settlement Model:** Enforce **One complete direct settlement per contributor payable, with immutable payment evidence (Single Lump-Sum Model)**. Each completed booking generates exactly one indivisible contributor payable. Partial payments or installment disbursements are prohibited at the domain and database levels. This avoids introducing a 55th table (`contributor_settlement_events`) and preserves the 54-table freeze.
-2. **Post-Payout Reversal & Partner Receivable (`PARTNER_RECEIVABLE`):**
-   - When an incorrect credit or damage deduction is reversed after payout funds have already been disbursed to the partner's external bank account, the platform establishes an asset claim:
-     $$\text{Debit } \texttt{PARTNER\_RECEIVABLE} \quad / \quad \text{Credit } \texttt{REFUND\_PAYABLE}$$
-   - This allows immediate gateway refund execution to the customer without creating negative liability balances or untraceable ledger states.
-3. **Recovery Execution:**
-   - **Option A (Automated Offset):** Deducted automatically from the partner's net rental proceeds in the subsequent settlement batch.
-   - **Option B (Direct Repayment):** Settled via direct bank transfer or payment link from partner to platform operating clearing.
+1. **Selected Contributor Settlement Model:** Enforce **One complete direct settlement per contributor payable, with immutable payment evidence (Single Lump-Sum Model)**. Each completed booking generates exactly one indivisible contributor payable. Partial payments or installment disbursements are prohibited.
+2. **Direct Bilateral Settlement:** The rental partner pays the contributor directly outside the platform. The platform records the UTR, receipt, and date in `contributor_payables`.
+3. **Contributor Confirmation & Dispute:** The contributor has an explicit window to confirm receipt or raise a dispute. Disputed settlements trigger Admin arbitration.
+4. **Reversal & Overpayment Recovery:** When an incorrect contributor payment or damage adjustment occurs, the partner recovers the overpayment directly from the contributor outside the platform, with evidence recorded in the payable audit trail.
+
+---
+
+## ADR-018: Partner-Direct Payment Collection & Manual Verification Architecture (MVP Baseline)
+
+### Context
+Launching a vehicle rental marketplace in Vijayawada requires a legally sound, operationally robust, and low-friction payment architecture. Operating a platform-owned payment gateway with centralized collection, escrow-like deposit holding, and split payouts introduces regulatory complexity (RBI Payment Aggregator regulations, GST Section 9(5) E-Commerce Operator compliance, escrow bank accounts). A simpler, compliant MVP model is required.
+
+### Decision
+The platform adopts **PARTNER-DIRECT PAYMENT COLLECTION** for the MVP:
+
+1. **Direct Payee Role:** The rental partner managing the vehicle is the customer-facing rental service provider and direct payee for all bookings on that vehicle.
+2. **Zero Platform Cash Handling:** The platform does NOT collect, hold, escrow, split, or disburse customer rental money or security deposits. No platform-owned payment gateway account is integrated for customer rental checkout.
+3. **Partner Payment Methods Supported:**
+   - Partner's UPI QR Code (uploaded image displayed at checkout).
+   - Partner's UPI ID (VPA displayed with copy button).
+   - Partner's external payment link (if configured).
+   - Cash at pickup (only if explicitly enabled by the partner).
+4. **Customer Payment Submission:** Customer executes payment directly to partner outside the platform, then submits payment details:
+   - Transaction Reference / Bank UTR.
+   - Payment Method used.
+   - Exact Amount transferred.
+   - Transaction Timestamp.
+   - Optional receipt / screenshot image.
+   - Status transitions to `SUBMITTED_FOR_VERIFICATION`.
+5. **Strict Partner Verification Gate (Invariant):**
+   - **A customer-uploaded screenshot, receipt, or UTR must NEVER automatically mark a payment as verified or confirm a booking.**
+   - The partner independently verifies their own UPI, bank, or cash records.
+   - ONLY an explicit action by the responsible partner can mark the submission `VERIFIED`.
+   - Booking transitions to `CONFIRMED` only upon partner verification (or under a partner-approved pay-at-pickup policy).
+6. **Temporary Availability Hold & Verification Locking:**
+   - 15-minute hold created on booking request (`ACTIVE`).
+   - Customer submission before TTL expiration transitions hold to `VERIFICATION_PENDING` with a configurable verification window (e.g. 60 minutes), preserving inventory locking.
+   - Expired hold without submission transitions to `EXPIRED`, releasing inventory.
+   - Late or unmatched payments are handled via an explicit partner exception/refund workflow without auto-confirming expired bookings.
+7. **Security Deposit Direct Custody & Refund Flow:**
+   - Partner directly collects and holds the customer security deposit.
+   - Partner directly executes deposit refunds outside the platform.
+   - Platform records expected deposit, collected amount, collection reference, refund amount, refund UTR, evidence, and customer acknowledgement/dispute.
+   - Disputed damage deductions require evidence and never auto-approve on timeout; unresolved disputes trigger Admin review.
+8. **Contributor Compensation (Approach A Preserved):**
+   - Partner owes contributor an agreed fixed fee per completed booking.
+   - Partner pays contributor directly outside the platform.
+   - Platform tracks obligation in `contributor_payables`.
+
+### Alternatives Considered
+1. **Platform as Merchant of Record with Razorpay Route:** Centralized collection, marketplace split settlements, automated payouts. *Rejected for MVP due to regulatory complexity, escrow licensing requirements, and partner linked-account onboarding friction.*
+2. **Automated Screenshot OCR / Webhook Parsing:** Auto-confirming bookings on receipt upload. *Rejected due to extreme fraud vulnerability (tampered images, recycled UTRs).*
+3. **Partner-Direct Collection with Manual Verification Gate:** *Selected for MVP for speed, regulatory simplicity, zero financial liability for the platform, and high partner operational control.*
+
+### Responsibilities Matrix
+- **Platform Responsibilities:** Operational record-keeping, booking state management, inventory locking, displaying partner payment profiles, capturing customer submission metadata, notifying parties, tracking verification deadlines, recording deposit refunds and contributor payables, providing Admin dispute resolution.
+- **Rental Partner Responsibilities:** Maintaining accurate UPI QR/ID in payment profile, collecting rental charges and deposits directly, verifying transactions against bank/UPI statements, executing deposit refunds, paying contributors directly.
+
+### Future Phase Migration Path
+When the business scales and regulatory/commercial validation is completed:
+- Integrate an approved marketplace payment provider (e.g., Razorpay Route) using provider-agnostic interfaces.
+- Activate the **8 Future-Phase Tables** (`payment_webhook_events`, `partner_commissions`, `payout_methods`, `settlements`, `ledger_accounts`, `ledger_transactions`, `ledger_entries`, `platform_commission_rules`).
+- Onboard partners to linked merchant accounts with automated KYC.
+
+### Outstanding Validation Gates
+Before production launch:
+- **Legal Validation:** Confirm partner-as-service-provider and partner-as-payee contract terms.
+- **Tax Validation:** Confirm GST compliance (pure tech intermediary vs. e-commerce operator).
+- **Insurance Validation:** Verify partner commercial rental insurance policies.
+- **Payment Provider Pre-Approval:** Maintain provider-agnostic design for future marketplace gateway integration.
+

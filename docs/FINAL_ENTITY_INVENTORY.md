@@ -3,16 +3,16 @@
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
 **Status:** Database Design Freeze Candidate Baseline  
-**Total Proposed Tables:** **54 Physical Tables** (52 Application-Domain Tables + 2 Infrastructure-Managed Tables)  
+**Total Proposed MVP Tables:** **47 Physical Tables** (45 Application-Domain Tables + 2 Infrastructure-Managed Tables) + **8 Future-Phase Tables** (55 Total Cataloged Entities)  
 
 > [!IMPORTANT]
 > **Pre-Implementation Notice:** All tables enumerated below represent the **proposed physical database design** to be created via Flyway migrations in MySQL 8.0+. **No migrations, JPA entities, or actual database schemas have been generated yet.** Application code and Flyway DDL scripts will only be authored after formal Product Owner database design freeze sign-off.
 
 ---
 
-## 1. Physical Table Count Reconciliation (50 $\rightarrow$ 52 Domain, 52 $\rightarrow$ 54 Total)
+## 1. Physical Table Count Reconciliation (Partner-Direct Payment Model)
 
-To guarantee audit-grade double-entry accounting integrity and eliminate unvalidated polymorphic references, the physical ledger schema has been fully normalized into three separate tables (`ledger_accounts`, `ledger_transactions`, `ledger_entries`), expanding the domain table count from 50 to 52 tables, for a total of **54 proposed physical MySQL tables**:
+Following the adoption of the **Partner-Direct Payment Collection** model (ADR-018), the platform handles zero customer funds, no platform general ledger accounts are active, and gateway clearing tables are deferred. The physical database inventory is cleanly categorized into **45 MVP Application-Domain Tables**, **2 Infrastructure-Managed Tables**, and **8 Future-Phase Marketplace Gateway Tables**:
 
 ```
 ┌─────────────────────────────────────────────────────────────┬───────────────┐
@@ -20,23 +20,27 @@ To guarantee audit-grade double-entry accounting integrity and eliminate unvalid
 ├─────────────────────────────────────────────────────────────┼───────────────┤
 │ 1. Identity, Access, KYC & Addresses                        │ 11 tables     │
 │ 2. Operating Locations, Partner Hubs & Logistics            │ 3 tables      │
-│ 3. Vehicle Inventory, Compliance & Pricing                  │ 6 tables      │
+│ 3. Vehicle Inventory, Compliance & Pricing (incl. docs)     │ 6 tables      │
 │ 4. Generic Vehicle Custody Tracking                         │ 1 table       │
 │ 5. Contributor Agreements & Fleet Proposals                 │ 4 tables      │
 │ 6. Bookings, Holds, Extensions, Inspections & Incidents     │ 7 tables      │
-│ 7. Payments, Deposits, Deductions, Payouts & Double-Entry   │ 14 tables     │
+│ 7. Partner Payment Profiles, Demands, Submissions & Deposits│ 7 tables      │
 │ 8. Transactional Outbox, Support, Reviews & Auditing        │ 6 tables      │
 ├─────────────────────────────────────────────────────────────┼───────────────┤
-│ Total Proposed Application Domain Tables                    │ 52 tables     │
+│ Total Proposed Application Domain Tables                    │ 45 tables     │
 │ 9. Infrastructure-Managed Tables (ShedLock & Flyway)        │ 2 tables      │
 ├─────────────────────────────────────────────────────────────┼───────────────┤
-│ TOTAL PROPOSED PHYSICAL MYSQL TABLES                        │ 54 tables     │
+│ TOTAL PROPOSED PHYSICAL MYSQL TABLES FOR MVP                │ 47 tables     │
+├─────────────────────────────────────────────────────────────┼───────────────┤
+│ Future-Phase Marketplace Gateway & Double-Entry Tables      │ 8 tables      │
+├─────────────────────────────────────────────────────────────┼───────────────┤
+│ TOTAL CATALOGED DATABASE ENTITIES                           │ 55 tables     │
 └─────────────────────────────────────────────────────────────┴───────────────┘
 ```
 
 ---
 
-## 2. Table-by-Table Inventory (All 54 Physical Tables Individually Listed)
+## 2. Table-by-Table Inventory (All 47 MVP Physical Tables Individually Listed)
 
 ### Module 1: Identity, Access, KYC & Addresses (11 Tables)
 
@@ -310,126 +314,75 @@ To guarantee audit-grade double-entry accounting integrity and eliminate unvalid
 
 ---
 
-### Module 7: Payments, Deposits, Deductions, Payouts & Double-Entry (14 Tables)
+### Module 7: Partner Payment Profiles, Demands, Submissions & Deposits (7 Tables)
 
-#### 33. `payment_orders`
-- **Responsibility:** Payment orders created with payment gateway for initial rentals, extensions, or invoices.
+#### 33. `partner_payment_profiles`
+- **Responsibility:** Managing partner's direct payment receiving configuration (UPI QR image, UPI ID, external payment link, cash-at-pickup toggle). Does NOT store sensitive credentials (PINs, passwords, OTPs).
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `booking_id` $\rightarrow$ `bookings.id` (NULLABLE, `ON DELETE RESTRICT`), `hold_id` $\rightarrow$ `booking_holds.id` (NULLABLE, `ON DELETE SET NULL`)
-- **Important Columns:** `order_type` (ENUM: `INITIAL_BOOKING`, `EXTENSION`, `DAMAGE_INVOICE`), `provider` (VARCHAR 30: `RAZORPAY`), `provider_order_id` (VARCHAR 100), `amount` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `status` (ENUM: `CREATED`, `ATTEMPTED`, `PAID`, `FAILED`, `EXPIRED`), `idempotency_key` (VARCHAR 64), `created_at`, `paid_at` (DATETIME NULL).
-- **Unique Constraints:** `uk_payment_orders_provider_id` (`provider_order_id`), `uk_payment_orders_idempotency` (`idempotency_key`)
-- **Important Indexes:** `idx_payment_orders_booking` (`booking_id`)
+- **Foreign Keys:** `partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE CASCADE`)
+- **Important Columns:** `payee_display_name` (VARCHAR 150), `upi_id` (VARCHAR 100), `upi_qr_object_key` (VARCHAR 255 NULL), `external_payment_url` (VARCHAR 255 NULL), `is_pay_at_pickup_enabled` (BOOLEAN DEFAULT FALSE), `accepted_methods_json` (JSON), `payment_instructions_note` (TEXT NULL), `is_active` (BOOLEAN DEFAULT TRUE), `created_at`, `updated_at`.
+- **Unique Constraints:** `uk_partner_pay_profile_partner` (`partner_id`)
+- **Important Indexes:** `idx_partner_pay_profile_active` (`partner_id`, `is_active`)
 
-#### 34. `payment_transactions`
-- **Responsibility:** Inward transaction attempts confirmed by payment gateway.
+#### 34. `rental_payment_demands`
+- **Responsibility:** Explicit payment obligations demanded for an active booking hold, booking extension, or approved damage claim. Replaces platform-clearing payment orders.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `payment_order_id` $\rightarrow$ `payment_orders.id` (`ON DELETE RESTRICT`)
-- **Important Columns:** `provider_payment_id` (VARCHAR 100), `payment_method` (ENUM: `UPI`, `CARD`, `NETBANKING`, `WALLET`), `transaction_type` (ENUM: `CAPTURE`, `AUTHORIZE`), `amount` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `status` (ENUM: `SUCCESS`, `FAILED`), `provider_signature` (VARCHAR 255 NULL), `created_at`.
-- **Unique Constraints:** `uk_payment_transactions_provider_id` (`provider_payment_id`)
-- **Important Indexes:** `idx_payment_tx_order` (`payment_order_id`)
+- **Foreign Keys:** `hold_id` $\rightarrow$ `booking_holds.id` (NULLABLE, `ON DELETE SET NULL`), `booking_id` $\rightarrow$ `bookings.id` (NULLABLE, `ON DELETE RESTRICT`), `manager_partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE RESTRICT`), `customer_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`)
+- **Important Columns:** `demand_reference` (VARCHAR 32), `demand_type` (ENUM: `INITIAL_RENTAL`, `EXTENSION`, `DAMAGE_INVOICE`), `amount_demanded` (DECIMAL(10,2)), `security_deposit_demanded` (DECIMAL(10,2) DEFAULT 0.00), `currency` (CHAR(3) DEFAULT 'INR'), `status` (ENUM: `ISSUED`, `PAYMENT_SUBMITTED`, `VERIFIED`, `EXPIRED`, `CANCELLED`), `expires_at` (DATETIME), `verified_at` (DATETIME NULL), `created_at`, `updated_at`.
+- **Unique Constraints:** `uk_payment_demands_reference` (`demand_reference`)
+- **Important Indexes:** `idx_demands_hold` (`hold_id`), `idx_demands_booking` (`booking_id`), `idx_demands_partner_status` (`manager_partner_id`, `status`)
 
-#### 35. `security_deposits`
-- **Responsibility:** Explicit tracking of customer security deposits held as refundable liabilities.
+#### 35. `rental_payment_submissions`
+- **Responsibility:** Customer-submitted evidence of direct payment to partner. Customer upload NEVER auto-verifies payment. Only explicit partner verification transitions status.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `booking_id` $\rightarrow$ `bookings.id` (`ON DELETE RESTRICT`)
-- **Important Columns:** `initial_amount` (DECIMAL(10,2)), `current_held_amount` (DECIMAL(10,2)), `total_deducted_amount` (DECIMAL(10,2) DEFAULT 0.00), `total_refunded_amount` (DECIMAL(10,2) DEFAULT 0.00), `status` (ENUM: `COLLECTED`, `HELD`, `DEDUCTION_PROPOSED`, `DISPUTED`, `PARTIALLY_DEDUCTED`, `PARTIALLY_REFUNDED`, `FULLY_REFUNDED`, `CLOSED`), `collected_at` (DATETIME), `closed_at` (DATETIME NULL), `created_at`, `updated_at`.
+- **Foreign Keys:** `demand_id` $\rightarrow$ `rental_payment_demands.id` (`ON DELETE RESTRICT`), `hold_id` $\rightarrow$ `booking_holds.id` (NULLABLE, `ON DELETE SET NULL`), `booking_id` $\rightarrow$ `bookings.id` (NULLABLE, `ON DELETE SET NULL`), `customer_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`), `manager_partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE RESTRICT`), `verified_by_user_id` $\rightarrow$ `users.id` (NULLABLE)
+- **Important Columns:** `payment_method` (ENUM: `UPI_QR`, `UPI_ID`, `EXTERNAL_LINK`, `CASH_AT_PICKUP`), `amount_submitted` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `transaction_reference` (VARCHAR 100: UTR/Transaction ID/Cash Receipt), `transaction_timestamp` (DATETIME), `receipt_object_key` (VARCHAR 255 NULL), `status` (ENUM: `SUBMITTED_FOR_VERIFICATION`, `VERIFIED`, `REJECTED`), `verified_at` (DATETIME NULL), `rejection_reason` (TEXT NULL), `notes` (TEXT NULL), `created_at`.
+- **Unique Constraints:** `uk_submissions_partner_ref` (`manager_partner_id`, `transaction_reference`)
+- **Important Indexes:** `idx_submissions_demand` (`demand_id`), `idx_submissions_partner_status` (`manager_partner_id`, `status`)
+
+#### 36. `security_deposits`
+- **Responsibility:** Explicit tracking of customer security deposits collected, held, and refunded directly by the rental partner.
+- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
+- **Foreign Keys:** `booking_id` $\rightarrow$ `bookings.id` (`ON DELETE RESTRICT`), `manager_partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE RESTRICT`), `customer_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`)
+- **Important Columns:** `required_amount` (DECIMAL(10,2)), `collected_amount` (DECIMAL(10,2) DEFAULT 0.00), `collection_method` (ENUM: `UPI_QR`, `UPI_ID`, `EXTERNAL_LINK`, `CASH_AT_PICKUP` NULL), `collection_reference` (VARCHAR 100 NULL: UTR Number), `collection_evidence_object_key` (VARCHAR 255 NULL), `total_deducted_amount` (DECIMAL(10,2) DEFAULT 0.00), `total_refunded_amount` (DECIMAL(10,2) DEFAULT 0.00), `status` (ENUM: `PENDING_COLLECTION`, `COLLECTED_HELD_BY_PARTNER`, `DEDUCTION_PROPOSED`, `DISPUTED`, `PARTIALLY_REFUNDED`, `FULLY_REFUNDED`, `RETAINED_FOR_DAMAGE`, `CLOSED`), `collected_at` (DATETIME NULL), `closed_at` (DATETIME NULL), `created_at`, `updated_at`.
 - **Unique Constraints:** `uk_security_deposits_booking` (`booking_id`)
-- **Important Indexes:** `idx_security_deposits_status` (`status`)
+- **Important Indexes:** `idx_security_deposits_partner_status` (`manager_partner_id`, `status`)
 
-#### 36. `deposit_deductions`
-- **Responsibility:** Granular damage, fuel, or penalty deduction claims against a deposit. Never auto-approved upon 48h expiration.
+#### 37. `deposit_deductions`
+- **Responsibility:** Granular damage, fuel, cleaning, or challan deduction claims proposed by partner against deposit. Never auto-approved upon 48h timeout; requires customer agreement or Admin resolution.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `security_deposit_id` $\rightarrow$ `security_deposits.id` (`ON DELETE RESTRICT`), `incident_id` $\rightarrow$ `incidents.id` (NULLABLE, `ON DELETE RESTRICT`), `resolved_by_user_id` $\rightarrow$ `users.id` (NULLABLE)
-- **Important Columns:** `deduction_type` (ENUM: `DAMAGE_REPAIR`, `LATE_RETURN_PENALTY`, `FUEL_DEFICIT`, `CLEANING_FEE`, `TRAFFIC_CHALLAN`), `proposed_amount` (DECIMAL(10,2)), `approved_amount` (DECIMAL(10,2) NULL), `evidence_summary` (TEXT), `status` (ENUM: `PROPOSED`, `DISPUTED`, `APPROVED`, `CANCELLED`), `dispute_reason` (TEXT NULL), `dispute_opened_at` (DATETIME NULL), `dispute_resolved_at` (DATETIME NULL), `created_at`.
+- **Foreign Keys:** `security_deposit_id` $\rightarrow$ `security_deposits.id` (`ON DELETE RESTRICT`), `incident_id` $\rightarrow$ `incidents.id` (NULLABLE, `ON DELETE RESTRICT`), `proposed_by_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`), `resolved_by_admin_id` $\rightarrow$ `users.id` (NULLABLE)
+- **Important Columns:** `deduction_type` (ENUM: `DAMAGE_REPAIR`, `LATE_RETURN_PENALTY`, `FUEL_DEFICIT`, `CLEANING_FEE`, `TRAFFIC_CHALLAN`), `proposed_amount` (DECIMAL(10,2)), `approved_amount` (DECIMAL(10,2) NULL), `evidence_summary` (TEXT), `status` (ENUM: `PROPOSED`, `DISPUTED`, `APPROVED_BY_ADMIN`, `AGREED_BY_CUSTOMER`, `CANCELLED`), `dispute_reason` (TEXT NULL), `dispute_opened_at` (DATETIME NULL), `resolved_at` (DATETIME NULL), `created_at`.
 - **Important Indexes:** `idx_deposit_deductions_deposit` (`security_deposit_id`)
 
-#### 37. `payment_webhook_events`
-- **Responsibility:** Inward webhook idempotency ledger guaranteeing once-and-only-once processing.
+#### 38. `security_deposit_refunds`
+- **Responsibility:** Direct deposit refunds executed by partner outside platform. Platform monitors and records refund reference, proof, date, and customer confirmation/dispute. Platform never executes gateway transfers.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** None
-- **Important Columns:** `provider` (VARCHAR 30: `RAZORPAY`), `provider_event_id` (VARCHAR 100), `event_type` (VARCHAR 50), `payload_json` (JSON), `signature_verified` (BOOLEAN DEFAULT FALSE), `processing_status` (ENUM: `PENDING`, `PROCESSED`, `IGNORED`, `FAILED`), `failure_reason` (TEXT NULL), `received_at` (DATETIME), `processed_at` (DATETIME NULL).
-- **Unique Constraints:** `uk_webhook_provider_event` (`provider`, `provider_event_id`)
-- **Important Indexes:** `idx_webhook_processing_status` (`processing_status`)
+- **Foreign Keys:** `security_deposit_id` $\rightarrow$ `security_deposits.id` (`ON DELETE RESTRICT`), `booking_id` $\rightarrow$ `bookings.id` (`ON DELETE RESTRICT`), `manager_partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE RESTRICT`), `customer_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`)
+- **Important Columns:** `refund_amount` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `refund_method` (ENUM: `UPI_TRANSFER`, `BANK_NEFT_IMPS`, `CASH`), `refund_transaction_reference` (VARCHAR 100: UTR Number), `receipt_object_key` (VARCHAR 255 NULL), `status` (ENUM: `PROMISED`, `DISBURSED_BY_PARTNER`, `CONFIRMED_BY_CUSTOMER`, `DISPUTED_BY_CUSTOMER`, `ADMIN_OVERRIDE`), `refunded_at` (DATETIME NULL), `acknowledged_at` (DATETIME NULL), `dispute_notes` (TEXT NULL), `created_at`, `updated_at`.
+- **Unique Constraints:** `uk_dep_refunds_ref` (`manager_partner_id`, `refund_transaction_reference`)
+- **Important Indexes:** `idx_deposit_refunds_booking` (`booking_id`), `idx_deposit_refunds_deposit` (`security_deposit_id`)
 
-#### 38. `refunds`
-- **Responsibility:** Auditable customer refunds (cancellations, deposit releases, dispute adjustments, delayed webhook auto-refunds) with retry and offline settlement tracking. Decoupled from booking status.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `booking_id` $\rightarrow$ `bookings.id` (`ON DELETE RESTRICT`), `security_deposit_id` $\rightarrow$ `security_deposits.id` (NULLABLE, `ON DELETE RESTRICT`), `payment_transaction_id` $\rightarrow$ `payment_transactions.id` (NULLABLE)
-- **Important Columns:** `refund_type` (ENUM: `CANCELLATION_REFUND`, `DEPOSIT_RELEASE`, `DISPUTE_ADJUSTMENT`, `AUTO_REFUND_EXPIRED_HOLD`), `amount` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `status` (ENUM: `INITIATED`, `PROCESSING`, `SUCCEEDED`, `FAILED`, `RETRY_QUEUED`, `MANUAL_REVIEW`, `OFFLINE_SETTLED`), `provider_refund_id` (VARCHAR 100 NULL), `idempotency_key` (VARCHAR 64), `offline_utr_reference` (VARCHAR 100 NULL), `requested_at` (DATETIME), `processed_at` (DATETIME NULL), `failure_reason` (VARCHAR 255 NULL).
-- **Unique Constraints:** `uk_refunds_idempotency` (`idempotency_key`), `uk_refunds_provider_id` (`provider_refund_id`)
-- **Important Indexes:** `idx_refunds_booking` (`booking_id`)
-
-#### 39. `partner_commissions`
-- **Responsibility:** Platform commission calculation per booking.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `booking_id` $\rightarrow$ `bookings.id` (`ON DELETE RESTRICT`), `partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE RESTRICT`)
-- **Important Columns:** `gross_rental_amount` (DECIMAL(10,2)), `commission_rate_percentage` (DECIMAL(5,2)), `platform_commission_amount` (DECIMAL(10,2)), `tax_on_commission` (DECIMAL(10,2)), `net_partner_entitlement` (DECIMAL(10,2)), `status` (ENUM: `CALCULATED`, `RECONCILED`), `created_at`.
-- **Unique Constraints:** `uk_partner_commissions_booking` (`booking_id`)
-
-#### 40. `contributor_payables`
+#### 39. `contributor_payables`
 - **Responsibility:** Partner-contributor contractual obligation tracking model (NOT a platform general ledger liability). Enforces single, complete direct partner settlement with immutable payment evidence.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
 - **Foreign Keys:** `booking_id` $\rightarrow$ `bookings.id` (`ON DELETE RESTRICT`), `agreement_id` $\rightarrow$ `contribution_agreements.id` (`ON DELETE RESTRICT`), `contributor_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`), `partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE RESTRICT`)
-- **Important Columns:** `fixed_amount` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `payable_status` (ENUM: `PENDING_RETURN`, `ELIGIBLE`, `SCHEDULED`, `SETTLED_BY_PARTNER`, `ACKNOWLEDGED`, `DISPUTED`, `CANCELLED`), `settlement_mode` (ENUM: `DIRECT_PARTNER_SETTLED`, `PLATFORM_FACILITATED`), `bank_transaction_reference` (VARCHAR 100 NULL: UTR Number), `receipt_document_object_key` (VARCHAR 255 NULL), `partner_settled_at` (DATETIME NULL), `contributor_acknowledged_at` (DATETIME NULL), `created_at`, `updated_at`.
+- **Important Columns:** `fixed_amount` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `payable_status` (ENUM: `PENDING_RETURN`, `ELIGIBLE`, `SCHEDULED`, `SETTLED_BY_PARTNER`, `ACKNOWLEDGED`, `DISPUTED`, `CANCELLED`), `settlement_mode` (ENUM: `DIRECT_PARTNER_SETTLED`), `bank_transaction_reference` (VARCHAR 100 NULL: UTR Number), `receipt_document_object_key` (VARCHAR 255 NULL), `partner_settled_at` (DATETIME NULL), `contributor_acknowledged_at` (DATETIME NULL), `created_at`, `updated_at`.
 - **Unique Constraints:** `uk_contrib_payables_booking` (`booking_id`, `agreement_id`)
 - **Important Indexes:** `idx_contrib_payables_contributor` (`contributor_user_id`, `payable_status`), `idx_contrib_payables_partner` (`partner_id`, `payable_status`)
-
-#### 41. `payout_methods`
-- **Responsibility:** Tokenized disbursement recipient bank/UPI accounts for partners and contributors.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`)
-- **Important Columns:** `payee_role` (ENUM: `RENTAL_PARTNER`, `VEHICLE_CONTRIBUTOR`), `provider` (VARCHAR 30: `RAZORPAYX`), `provider_contact_id` (VARCHAR 100), `provider_fund_account_id` (VARCHAR 100), `account_holder_name` (VARCHAR 150), `account_number_last4` (CHAR(4)), `ifsc_code_encrypted` (VARCHAR 255), `upi_id_masked` (VARCHAR 100 NULL), `verification_status` (ENUM: `UNVERIFIED`, `VERIFIED`, `REJECTED`), `is_primary` (BOOLEAN DEFAULT FALSE), `created_at`, `updated_at`.
-- **Important Indexes:** `idx_payout_methods_user` (`user_id`)
-
-#### 42. `settlements`
-- **Responsibility:** Outward platform disbursement batches and net rental payouts to rental partners.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `payee_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`), `payout_method_id` $\rightarrow$ `payout_methods.id` (NULLABLE, `ON DELETE RESTRICT`)
-- **Important Columns:** `payee_type` (ENUM: `RENTAL_PARTNER`), `settlement_type` (ENUM: `PARTNER_RENTAL_PROCEEDS`), `amount` (DECIMAL(10,2)), `currency` (CHAR(3) DEFAULT 'INR'), `status` (ENUM: `INITIATED`, `PROCESSING`, `COMPLETED`, `FAILED`, `REVERSED`), `provider_payout_id` (VARCHAR 100 NULL), `failure_reason` (VARCHAR 255 NULL), `initiated_at` (DATETIME), `completed_at` (DATETIME NULL), `created_at`.
-- **Important Indexes:** `idx_settlements_payee` (`payee_user_id`, `status`)
-
-#### 43. `ledger_accounts` (NEW Normalized Domain Table)
-- **Responsibility:** Master Chart of Accounts for the platform general ledger.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** None
-- **Important Columns:** `account_code` (VARCHAR 40: `GATEWAY_CLEARING`, `CUSTOMER_REFUNDABLE_LIABILITY`, `CUSTOMER_RENTAL_CLEARING`, `PLATFORM_COMMISSION_REVENUE`, `PARTNER_PAYABLE`, `PARTNER_RECEIVABLE`, `REFUND_PAYABLE`, `SETTLEMENT_CLEARING`), `account_name` (VARCHAR 100), `account_category` (ENUM: `ASSET`, `LIABILITY`, `EQUITY`, `REVENUE`, `EXPENSE`), `normal_balance` (ENUM: `DEBIT`, `CREDIT`), `currency` (CHAR(3) DEFAULT 'INR'), `is_active` (BOOLEAN DEFAULT TRUE), `created_at` (DATETIME).
-- **Unique Constraints:** `uk_ledger_accounts_code` (`account_code`)
-
-#### 44. `ledger_transactions` (NEW Normalized Domain Table)
-- **Responsibility:** Journal transaction header records grouping balancing debits and credits.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** None (typed reference attributes bind to underlying domain entities)
-- **Important Columns:** `transaction_group_id` (VARCHAR 64), `reference_type` (ENUM: `BOOKING`, `PAYMENT_ORDER`, `SECURITY_DEPOSIT`, `REFUND`, `PARTNER_SETTLEMENT`, `REVERSAL_ADJUSTMENT`), `reference_id` (BIGINT UNSIGNED), `narrative` (VARCHAR 255), `posted_at` (DATETIME), `created_at` (DATETIME).
-- **Unique Constraints:** `uk_ledger_transactions_group` (`transaction_group_id`)
-- **Important Indexes:** `idx_ledger_tx_ref` (`reference_type`, `reference_id`), `idx_ledger_tx_posted` (`posted_at`)
-
-#### 45. `ledger_entries` (Updated Line Items Table)
-- **Responsibility:** Append-only double-entry journal line items.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `transaction_id` $\rightarrow$ `ledger_transactions.id` (`ON DELETE RESTRICT`), `account_id` $\rightarrow$ `ledger_accounts.id` (`ON DELETE RESTRICT`)
-- **Important Columns:** `sequence_number` (SMALLINT UNSIGNED), `debit_amount` (DECIMAL(12,2) DEFAULT 0.00), `credit_amount` (DECIMAL(12,2) DEFAULT 0.00), `created_at` (DATETIME).
-- **Check Constraints:** `chk_ledger_entry_amounts` (`debit_amount >= 0.00 AND credit_amount >= 0.00 AND (debit_amount > 0.00 OR credit_amount > 0.00)`)
-- **Important Indexes:** `idx_ledger_entries_account` (`account_id`, `created_at`), `idx_ledger_entries_tx` (`transaction_id`)
-
-#### 46. `platform_commission_rules`
-- **Responsibility:** Configurable rules for platform commission percentages and minimum fees.
-- **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** `city_id` $\rightarrow$ `cities.id` (NULLABLE)
-- **Important Columns:** `vehicle_category` (ENUM: `CAR`, `BIKE`, `SCOOTER`), `partner_tier` (VARCHAR 30 NULL), `commission_percentage` (DECIMAL(5,2)), `fixed_fee` (DECIMAL(10,2) DEFAULT 0.00), `min_commission` (DECIMAL(10,2) DEFAULT 0.00), `effective_from` (DATETIME), `effective_to` (DATETIME NULL), `is_active` (BOOLEAN DEFAULT TRUE), `created_at`.
-- **Important Indexes:** `idx_comm_rules_eval` (`vehicle_category`, `is_active`, `effective_from`)
 
 ---
 
 ### Module 8: Transactional Outbox, Support, Reviews & Auditing (6 Tables)
 
-#### 47. `outbox_events`
-- **Responsibility:** Transactional outbox guaranteeing resilient, idempotent delivery of external side-effects (payment gateway calls, notifications).
+#### 40. `outbox_events`
+- **Responsibility:** Transactional outbox guaranteeing resilient, idempotent delivery of external side-effects (Cloudinary media processing, notifications, email/SMS dispatch).
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
-- **Foreign Keys:** None
+- **Foreign Keys:** None (intentionally generic typed aggregate reference: `aggregate_type`, `aggregate_id`)
 - **Important Columns:** `aggregate_type` (VARCHAR 50), `aggregate_id` (BIGINT UNSIGNED), `event_type` (VARCHAR 50), `payload_json` (JSON), `status` (ENUM: `PENDING`, `PROCESSING`, `PROCESSED`, `FAILED`, `DEAD_LETTER`), `retry_count` (TINYINT UNSIGNED DEFAULT 0), `next_retry_at` (DATETIME NULL), `failure_reason` (TEXT NULL), `created_at`, `processed_at` (DATETIME NULL).
 - **Important Indexes:** `idx_outbox_polling` (`status`, `next_retry_at`)
 
-#### 48. `reviews`
+#### 41. `reviews`
 - **Responsibility:** Customer ratings and reviews bound to completed bookings.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
 - **Foreign Keys:** `booking_id` $\rightarrow$ `bookings.id` (`ON DELETE RESTRICT`), `reviewer_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`), `vehicle_id` $\rightarrow$ `vehicles.id` (`ON DELETE RESTRICT`), `partner_id` $\rightarrow$ `partner_profiles.id` (`ON DELETE RESTRICT`)
@@ -437,7 +390,7 @@ To guarantee audit-grade double-entry accounting integrity and eliminate unvalid
 - **Unique Constraints:** `uk_reviews_booking` (`booking_id`)
 - **Important Indexes:** `idx_reviews_vehicle` (`vehicle_id`, `moderation_status`)
 
-#### 49. `support_tickets`
+#### 42. `support_tickets`
 - **Responsibility:** Customer, partner, and contributor support and dispute tickets.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
 - **Foreign Keys:** `user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`), `booking_id` $\rightarrow$ `bookings.id` (NULLABLE, `ON DELETE SET NULL`), `vehicle_id` $\rightarrow$ `vehicles.id` (NULLABLE, `ON DELETE SET NULL`), `assigned_admin_id` $\rightarrow$ `users.id` (NULLABLE)
@@ -445,22 +398,22 @@ To guarantee audit-grade double-entry accounting integrity and eliminate unvalid
 - **Unique Constraints:** `uk_support_tickets_number` (`ticket_number`)
 - **Important Indexes:** `idx_tickets_user_status` (`user_id`, `status`)
 
-#### 50. `support_ticket_messages`
+#### 43. `support_ticket_messages`
 - **Responsibility:** Threaded discussion messages inside support tickets.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
 - **Foreign Keys:** `ticket_id` $\rightarrow$ `support_tickets.id` (`ON DELETE CASCADE`), `sender_user_id` $\rightarrow$ `users.id` (`ON DELETE RESTRICT`)
 - **Important Columns:** `message_body` (TEXT), `attachment_object_key` (VARCHAR 255 NULL), `is_internal_note` (BOOLEAN DEFAULT FALSE), `sent_at` (DATETIME).
 - **Important Indexes:** `idx_ticket_messages_ticket` (`ticket_id`, `sent_at`)
 
-#### 51. `notifications`
+#### 44. `notifications`
 - **Responsibility:** In-app, SMS, and email notification delivery tracking.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
 - **Foreign Keys:** `user_id` $\rightarrow$ `users.id` (`ON DELETE CASCADE`)
 - **Important Columns:** `channel` (ENUM: `IN_APP`, `EMAIL`, `SMS`), `template_code` (VARCHAR 50), `title` (VARCHAR 200), `message_content` (TEXT), `payload_json` (JSON NULL), `delivery_status` (ENUM: `PENDING`, `SENT`, `FAILED`, `READ`), `read_at` (DATETIME NULL), `created_at`.
 - **Important Indexes:** `idx_notifications_user_status` (`user_id`, `delivery_status`, `created_at`)
 
-#### 52. `audit_logs`
-- **Responsibility:** Immutable security, authorization, and administrative action audit log.
+#### 45. `audit_logs`
+- **Responsibility:** Immutable security, authorization, payment verification, and administrative action audit log.
 - **Primary Key:** `id` (BIGINT UNSIGNED AUTO_INCREMENT)
 - **Foreign Keys:** `actor_user_id` $\rightarrow$ `users.id` (NULLABLE)
 - **Important Columns:** `action` (VARCHAR 100), `entity_type` (VARCHAR 50), `entity_id` (BIGINT UNSIGNED), `ip_address` (VARCHAR 45 NULL), `correlation_id` (VARCHAR 64 NULL), `metadata_json_redacted` (JSON NULL), `occurred_at` (DATETIME).
@@ -470,12 +423,51 @@ To guarantee audit-grade double-entry accounting integrity and eliminate unvalid
 
 ### Module 9: Infrastructure-Managed Tables (2 Tables)
 
-#### 53. `shedlock`
+#### 46. `shedlock`
 - **Responsibility:** Distributed task lock table managed directly by the ShedLock Spring library.
 - **Primary Key:** `name` (VARCHAR 64)
 - **Important Columns:** `lock_until` (TIMESTAMP(3)), `locked_at` (TIMESTAMP(3)), `locked_by` (VARCHAR 255).
 
-#### 54. `flyway_schema_history`
+#### 47. `flyway_schema_history`
 - **Responsibility:** Database migration audit table managed directly by Flyway.
 - **Primary Key:** `installed_rank` (INT)
 - **Important Columns:** `version` (VARCHAR 50), `description` (VARCHAR 200), `type` (VARCHAR 20), `script` (VARCHAR 1000), `checksum` (INT), `installed_by` (VARCHAR 100), `installed_on` (TIMESTAMP), `execution_time` (INT), `success` (BOOLEAN).
+
+---
+
+## 3. Future-Phase Marketplace Gateway & Double-Entry Tables (8 Tables)
+
+The following 8 tables are formally preserved and specified for future activation upon onboarding an approved marketplace payment provider (e.g., Razorpay Route) with automated split settlements and platform general ledger tracking:
+
+#### FP1. `payment_webhook_events`
+- **Responsibility:** Inward gateway webhook idempotency ledger guaranteeing once-and-only-once processing.
+- **Key Columns:** `provider`, `provider_event_id`, `event_type`, `payload_json`, `signature_verified`, `processing_status`.
+
+#### FP2. `partner_commissions`
+- **Responsibility:** Automated platform commission fee calculation and settlement deductions.
+- **Key Columns:** `booking_id`, `partner_id`, `gross_rental_amount`, `commission_rate_percentage`, `platform_commission_amount`, `tax_on_commission`, `net_partner_entitlement`.
+
+#### FP3. `payout_methods`
+- **Responsibility:** Tokenized disbursement recipient bank/UPI accounts for automated partner payouts.
+- **Key Columns:** `user_id`, `payee_role`, `provider`, `provider_fund_account_id`, `account_holder_name`, `account_number_last4`, `ifsc_code_encrypted`.
+
+#### FP4. `settlements`
+- **Responsibility:** Outward automated marketplace settlement batches and partner disbursements.
+- **Key Columns:** `payee_user_id`, `payout_method_id`, `amount`, `status`, `provider_payout_id`, `initiated_at`, `completed_at`.
+
+#### FP5. `ledger_accounts`
+- **Responsibility:** Master Chart of Accounts for platform double-entry general ledger.
+- **Key Columns:** `account_code`, `account_name`, `account_category`, `normal_balance`, `is_active`.
+
+#### FP6. `ledger_transactions`
+- **Responsibility:** Journal transaction header records grouping balancing debits and credits.
+- **Key Columns:** `transaction_group_id`, `reference_type`, `reference_id`, `narrative`, `posted_at`.
+
+#### FP7. `ledger_entries`
+- **Responsibility:** Append-only double-entry journal line items.
+- **Key Columns:** `transaction_id`, `account_id`, `sequence_number`, `debit_amount`, `credit_amount`.
+
+#### FP8. `platform_commission_rules`
+- **Responsibility:** Configurable percentage and fixed fee commission rules by category and tier.
+- **Key Columns:** `vehicle_category`, `partner_tier`, `commission_percentage`, `fixed_fee`, `min_commission`, `effective_from`.
+
