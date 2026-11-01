@@ -535,6 +535,8 @@ public class BookingService {
                 .deliverySurchargeAmount(b.getDeliverySurchargeAmount())
                 .totalAmountPayable(b.getTotalAmountPayable())
                 .bookingStatus(b.getBookingStatus().name())
+                .status(b.getBookingStatus().name())
+                .custodyState(b.getVehicle() != null && b.getVehicle().getCurrentCustodyStatus() != null ? b.getVehicle().getCurrentCustodyStatus().name() : "PARTNER_CUSTODY")
                 .cancellationReason(b.getCancellationReason())
                 .cancelledAt(b.getCancelledAt())
                 .createdAt(b.getCreatedAt())

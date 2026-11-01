@@ -23,7 +23,7 @@ public class PaymentController {
     private final PaymentService paymentService;
     private final UserRepository userRepository;
 
-    @PostMapping("/payments/submit")
+    @PostMapping({"/payments/submit", "/payments/submissions"})
     public ResponseEntity<ApiResponse<PaymentDto.PaymentSubmissionDto>> submitPayment(
             @Valid @RequestBody PaymentDto.PaymentSubmissionRequest request
     ) {
@@ -33,24 +33,48 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.success(resp, "Payment submitted for partner verification"));
     }
 
-    @PostMapping("/partners/payments/{submissionId}/verify")
+    @PostMapping({"/partners/payments/{submissionId}/verify", "/partners/payments/submissions/{submissionId}/verify"})
     @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
     public ResponseEntity<ApiResponse<PaymentDto.PaymentSubmissionDto>> verifySubmission(
             @PathVariable Long submissionId,
-            @Valid @RequestBody PaymentDto.VerifySubmissionRequest request
+            @RequestBody(required = false) PaymentDto.VerifySubmissionRequest request
     ) {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
-        PaymentDto.PaymentSubmissionDto resp = paymentService.verifySubmission(user.getId(), submissionId, request);
+        PaymentDto.VerifySubmissionRequest req = request != null ? request : new PaymentDto.VerifySubmissionRequest(true, null);
+        PaymentDto.PaymentSubmissionDto resp = paymentService.verifySubmission(user.getId(), submissionId, req);
         return ResponseEntity.ok(ApiResponse.success(resp, "Payment submission processed"));
     }
 
-    @GetMapping("/partners/payments/submissions")
+    @PostMapping({"/partners/payments/{submissionId}/reject", "/partners/payments/submissions/{submissionId}/reject"})
+    @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
+    public ResponseEntity<ApiResponse<PaymentDto.PaymentSubmissionDto>> rejectSubmission(
+            @PathVariable Long submissionId,
+            @RequestBody(required = false) java.util.Map<String, String> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String reason = body != null ? body.getOrDefault("rejectionReason", "Payment details could not be verified") : "Payment details could not be verified";
+        PaymentDto.PaymentSubmissionDto resp = paymentService.rejectSubmission(user.getId(), submissionId, reason);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Payment submission rejected"));
+    }
+
+    @GetMapping({"/partners/payments/submissions", "/partners/payments/pending"})
     @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
     public ResponseEntity<ApiResponse<List<PaymentDto.PaymentSubmissionDto>>> getPartnerSubmissions() {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
         return ResponseEntity.ok(ApiResponse.success(paymentService.getPendingSubmissionsForPartner(user.getId()), "Submissions retrieved"));
+    }
+
+    @GetMapping("/payments/demands/hold/{holdId}")
+    public ResponseEntity<ApiResponse<PaymentDto.PaymentDemandDto>> getDemandByHold(@PathVariable Long holdId) {
+        return ResponseEntity.ok(ApiResponse.success(paymentService.getDemandByHoldId(holdId), "Payment demand retrieved"));
+    }
+
+    @GetMapping("/payments/demands/{demandId}")
+    public ResponseEntity<ApiResponse<PaymentDto.PaymentDemandDto>> getDemandById(@PathVariable Long demandId) {
+        return ResponseEntity.ok(ApiResponse.success(paymentService.getDemandById(demandId), "Payment demand retrieved"));
     }
 
     @PostMapping("/payments/reapply")

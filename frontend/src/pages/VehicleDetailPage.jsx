@@ -85,6 +85,7 @@ export const VehicleDetailPage = () => {
         startTime: startTime + ':00Z',
         endTime: endTime + ':00Z',
         pickupLocationId: vehicle?.partnerHubId || 1,
+        dropoffLocationId: vehicle?.partnerHubId || 1,
         returnLocationId: vehicle?.partnerHubId || 1,
       };
 

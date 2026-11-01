@@ -9,7 +9,9 @@ import com.vehiclerental.modules.booking.repository.BookingRepository;
 import com.vehiclerental.modules.booking.service.BookingService;
 import com.vehiclerental.modules.operations.entity.SupportTicket;
 import com.vehiclerental.modules.operations.repository.SupportTicketRepository;
+import com.vehiclerental.modules.partner.entity.PartnerPaymentProfile;
 import com.vehiclerental.modules.partner.entity.PartnerProfile;
+import com.vehiclerental.modules.partner.repository.PartnerPaymentProfileRepository;
 import com.vehiclerental.modules.partner.repository.PartnerProfileRepository;
 import com.vehiclerental.modules.payment.dto.PaymentDto;
 import com.vehiclerental.modules.payment.entity.*;
@@ -40,6 +42,7 @@ public class PaymentService {
     private final BookingHoldRepository holdRepository;
     private final BookingRepository bookingRepository;
     private final PartnerProfileRepository partnerProfileRepository;
+    private final PartnerPaymentProfileRepository partnerPaymentProfileRepository;
     private final UserRepository userRepository;
     private final SupportTicketRepository supportTicketRepository;
     private final BookingService bookingService;
@@ -71,12 +74,26 @@ public class PaymentService {
         }
 
         String subRef = "SUB-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        RentalPaymentSubmission.PaymentMethod method;
+        String rawMethod = request.getPaymentMethod() != null ? request.getPaymentMethod().toUpperCase().trim() : "UPI_QR";
+        if ("UPI".equals(rawMethod) || "UPI_QR".equals(rawMethod)) {
+            method = RentalPaymentSubmission.PaymentMethod.UPI_QR;
+        } else if ("UPI_ID".equals(rawMethod)) {
+            method = RentalPaymentSubmission.PaymentMethod.UPI_ID;
+        } else if ("CASH".equals(rawMethod) || "CASH_AT_PICKUP".equals(rawMethod)) {
+            method = RentalPaymentSubmission.PaymentMethod.CASH_AT_PICKUP;
+        } else if ("EXTERNAL_LINK".equals(rawMethod) || "LINK".equals(rawMethod)) {
+            method = RentalPaymentSubmission.PaymentMethod.EXTERNAL_LINK;
+        } else {
+            method = RentalPaymentSubmission.PaymentMethod.UPI_QR;
+        }
+
         RentalPaymentSubmission submission = RentalPaymentSubmission.builder()
                 .submissionReference(subRef)
                 .demand(demand)
                 .managerPartner(demand.getManagerPartner())
                 .customerUser(customer)
-                .paymentMethod(RentalPaymentSubmission.PaymentMethod.valueOf(request.getPaymentMethod()))
+                .paymentMethod(method)
                 .transactionReference(request.getTransactionReference() != null ? request.getTransactionReference().trim() : null)
                 .amountSubmitted(request.getAmountSubmitted())
                 .currency("INR")
@@ -525,6 +542,68 @@ public class PaymentService {
         return contributorPayableRepository.findByPartnerId(partner.getId()).stream()
                 .map(this::mapPayableToDto)
                 .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public PaymentDto.PaymentDemandDto getDemandByHoldId(Long holdId) {
+        RentalPaymentDemand demand = demandRepository.findByHoldId(holdId)
+                .orElseThrow(() -> new ResourceNotFoundException("Demand not found for hold: " + holdId));
+        return mapDemandToDto(demand);
+    }
+
+    @Transactional(readOnly = true)
+    public PaymentDto.PaymentDemandDto getDemandById(Long demandId) {
+        RentalPaymentDemand demand = demandRepository.findById(demandId)
+                .orElseThrow(() -> new ResourceNotFoundException("Demand not found with id: " + demandId));
+        return mapDemandToDto(demand);
+    }
+
+    @Transactional
+    public PaymentDto.PaymentSubmissionDto rejectSubmission(Long partnerUserId, Long submissionId, String rejectionReason) {
+        RentalPaymentSubmission submission = submissionRepository.findById(submissionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Submission not found"));
+
+        if (!submission.getManagerPartner().getUser().getId().equals(partnerUserId)) {
+            throw new BadRequestException("Only the managing partner can reject this submission");
+        }
+
+        User partnerUser = userRepository.findById(partnerUserId).orElseThrow();
+        submission.setSubmissionStatus(RentalPaymentSubmission.SubmissionStatus.REJECTED);
+        submission.setRejectionReason(rejectionReason);
+        submission.setVerifiedAt(LocalDateTime.now());
+        submission.setVerifiedByUser(partnerUser);
+        return mapSubmissionToDto(submissionRepository.save(submission));
+    }
+
+    public PaymentDto.PaymentDemandDto mapDemandToDto(RentalPaymentDemand d) {
+        String partnerUpi = null;
+        String qrKey = null;
+        if (d.getManagerPartner() != null && partnerPaymentProfileRepository != null) {
+            PartnerPaymentProfile ppp = partnerPaymentProfileRepository.findByPartnerId(d.getManagerPartner().getId()).orElse(null);
+            if (ppp != null) {
+                partnerUpi = ppp.getUpiId();
+                qrKey = ppp.getUpiQrObjectKey();
+            }
+        }
+        return PaymentDto.PaymentDemandDto.builder()
+                .id(d.getId())
+                .demandReference(d.getDemandReference())
+                .holdId(d.getHold() != null ? d.getHold().getId() : null)
+                .managerPartnerId(d.getManagerPartner() != null ? d.getManagerPartner().getId() : null)
+                .partnerBusinessName(d.getManagerPartner() != null ? d.getManagerPartner().getBusinessName() : null)
+                .partnerUpiId(partnerUpi != null ? partnerUpi : "srirental@okaxis")
+                .partnerQrCodeUrl(qrKey)
+                .customerUserId(d.getCustomerUser() != null ? d.getCustomerUser().getId() : null)
+                .demandType(d.getDemandType() != null ? d.getDemandType().name() : null)
+                .amountDemanded(d.getAmountDemanded())
+                .totalVerifiedSubmitted(d.getTotalVerifiedSubmitted())
+                .amountSatisfied(d.getAmountSatisfied())
+                .excessAmount(d.getExcessAmount())
+                .cancellationFeeRetained(d.getCancellationFeeRetained())
+                .currency(d.getCurrency())
+                .status(d.getStatus() != null ? d.getStatus().name() : null)
+                .createdAt(d.getCreatedAt())
+                .build();
     }
 
     private PaymentDto.PaymentSubmissionDto mapSubmissionToDto(RentalPaymentSubmission s) {

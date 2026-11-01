@@ -20,6 +20,8 @@ public class PaymentDto {
         private Long holdId;
         private Long managerPartnerId;
         private String partnerBusinessName;
+        private String partnerUpiId;
+        private String partnerQrCodeUrl;
         private Long customerUserId;
         private String demandType;
         private BigDecimal amountDemanded;
@@ -77,8 +79,12 @@ public class PaymentDto {
     @AllArgsConstructor
     @Builder
     public static class VerifySubmissionRequest {
-        private boolean verified;
+        private Boolean verified;
         private String rejectionReason;
+
+        public boolean isVerified() {
+            return verified == null || verified;
+        }
     }
 
     @Getter

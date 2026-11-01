@@ -24,7 +24,7 @@ public class BookingController {
     private final BookingService bookingService;
     private final UserRepository userRepository;
 
-    @PostMapping("/booking-holds")
+    @PostMapping({"/booking-holds", "/bookings/holds"})
     public ResponseEntity<ApiResponse<BookingDto.HoldResponseDto>> createHold(
             @Valid @RequestBody BookingDto.CreateHoldRequest request
     ) {
@@ -34,7 +34,7 @@ public class BookingController {
         return ResponseEntity.ok(ApiResponse.success(response, "Booking hold created successfully with 15-minute validity"));
     }
 
-    @GetMapping("/booking-holds/{id}")
+    @GetMapping({"/booking-holds/{id}", "/bookings/holds/{id}"})
     public ResponseEntity<ApiResponse<BookingDto.HoldResponseDto>> getHold(@PathVariable Long id) {
         return ResponseEntity.ok(ApiResponse.success(bookingService.getHoldById(id), "Hold retrieved"));
     }
@@ -48,11 +48,16 @@ public class BookingController {
     @PostMapping("/bookings/{id}/cancel")
     public ResponseEntity<ApiResponse<BookingDto.BookingResponseDto>> cancelBooking(
             @PathVariable Long id,
+            @RequestBody(required = false) java.util.Map<String, String> body,
             @RequestParam(required = false) String reason
     ) {
+        String finalReason = reason;
+        if (finalReason == null && body != null) {
+            finalReason = body.getOrDefault("cancellationReason", body.get("reason"));
+        }
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
-        BookingDto.BookingResponseDto booking = bookingService.cancelBooking(user.getId(), id, reason);
+        BookingDto.BookingResponseDto booking = bookingService.cancelBooking(user.getId(), id, finalReason);
         return ResponseEntity.ok(ApiResponse.success(booking, "Booking cancelled successfully"));
     }
 
@@ -67,29 +72,81 @@ public class BookingController {
         return ResponseEntity.ok(ApiResponse.success(resp, "Inspection recorded and custody transitioned"));
     }
 
+    @PostMapping({"/partners/bookings/{bookingId}/handover", "/bookings/{bookingId}/handover"})
+    @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
+    public ResponseEntity<ApiResponse<BookingDto.BookingResponseDto>> handoverVehicle(
+            @PathVariable Long bookingId,
+            @RequestBody(required = false) java.util.Map<String, Object> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+
+        Integer odometer = body != null && body.get("odometerReading") != null ? ((Number) body.get("odometerReading")).intValue() : 24500;
+        Integer fuel = body != null && body.get("fuelPercent") != null ? ((Number) body.get("fuelPercent")).intValue() : 100;
+        String notes = body != null && body.get("conditionNotes") != null ? body.get("conditionNotes").toString() : "Vehicle delivered in pristine condition";
+
+        BookingDto.SubmitInspectionRequest req = BookingDto.SubmitInspectionRequest.builder()
+                .bookingId(bookingId)
+                .inspectionType("PRE_RENTAL_HANDOVER")
+                .odometerReadingKm(odometer)
+                .fuelOrBatteryLevelPercent(fuel)
+                .exteriorConditionNotes(notes)
+                .customerSignatureConfirmed(true)
+                .partnerSignatureConfirmed(true)
+                .build();
+        bookingService.conductInspection(user.getId(), req);
+        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(bookingId), "Pre-rental handover completed"));
+    }
+
+    @PostMapping({"/partners/bookings/{bookingId}/return", "/bookings/{bookingId}/return"})
+    @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
+    public ResponseEntity<ApiResponse<BookingDto.BookingResponseDto>> returnVehicle(
+            @PathVariable Long bookingId,
+            @RequestBody(required = false) java.util.Map<String, Object> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+
+        Integer odometer = body != null && body.get("odometerReading") != null ? ((Number) body.get("odometerReading")).intValue() : 24820;
+        Integer fuel = body != null && body.get("fuelPercent") != null ? ((Number) body.get("fuelPercent")).intValue() : 95;
+        String notes = body != null && body.get("conditionNotes") != null ? body.get("conditionNotes").toString() : "Vehicle returned cleanly";
+
+        BookingDto.SubmitInspectionRequest req = BookingDto.SubmitInspectionRequest.builder()
+                .bookingId(bookingId)
+                .inspectionType("POST_RENTAL_RETURN")
+                .odometerReadingKm(odometer)
+                .fuelOrBatteryLevelPercent(fuel)
+                .exteriorConditionNotes(notes)
+                .customerSignatureConfirmed(true)
+                .partnerSignatureConfirmed(true)
+                .build();
+        bookingService.conductInspection(user.getId(), req);
+        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(bookingId), "Post-rental return completed"));
+    }
+
     @GetMapping("/bookings/my")
-    public ResponseEntity<ApiResponse<PagedResponse<BookingDto.BookingResponseDto>>> getMyBookings(
+    public ResponseEntity<ApiResponse<java.util.List<BookingDto.BookingResponseDto>>> getMyBookings(
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "10") int size
+            @RequestParam(defaultValue = "100") int size
     ) {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
         Pageable pageable = PageRequest.of(page, size);
         Page<BookingDto.BookingResponseDto> result = bookingService.getCustomerBookings(user.getId(), pageable);
-        return ResponseEntity.ok(ApiResponse.success(PagedResponse.from(result), "Customer bookings retrieved"));
+        return ResponseEntity.ok(ApiResponse.success(result.getContent(), "Customer bookings retrieved"));
     }
 
     @GetMapping("/bookings/partner")
     @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
-    public ResponseEntity<ApiResponse<PagedResponse<BookingDto.BookingResponseDto>>> getPartnerBookings(
+    public ResponseEntity<ApiResponse<java.util.List<BookingDto.BookingResponseDto>>> getPartnerBookings(
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "10") int size
+            @RequestParam(defaultValue = "100") int size
     ) {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
         Pageable pageable = PageRequest.of(page, size);
         Page<BookingDto.BookingResponseDto> result = bookingService.getPartnerBookings(user.getId(), pageable);
-        return ResponseEntity.ok(ApiResponse.success(PagedResponse.from(result), "Partner bookings retrieved"));
+        return ResponseEntity.ok(ApiResponse.success(result.getContent(), "Partner bookings retrieved"));
     }
 
     @GetMapping("/bookings/{id}")

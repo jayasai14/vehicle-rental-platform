@@ -19,12 +19,16 @@ public class BookingDto {
         private Long vehicleId;
         @NotNull
         private Long pickupLocationId;
-        @NotNull
         private Long dropoffLocationId;
+        private Long returnLocationId;
         @NotNull
         private LocalDateTime startTime;
         @NotNull
         private LocalDateTime endTime;
+
+        public Long getDropoffLocationId() {
+            return dropoffLocationId != null ? dropoffLocationId : returnLocationId;
+        }
     }
 
     @Getter
@@ -89,6 +93,8 @@ public class BookingDto {
         private BigDecimal deliverySurchargeAmount;
         private BigDecimal totalAmountPayable;
         private String bookingStatus;
+        private String status;
+        private String custodyState;
         private String cancellationReason;
         private LocalDateTime cancelledAt;
         private LocalDateTime createdAt;

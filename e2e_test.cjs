@@ -85,15 +85,17 @@ async function runE2E() {
   const partnerToken = partnerLogin.data.data.accessToken;
   console.log('Partner authenticated:', partnerLogin.data.data.fullName);
 
-  // 3. Customer creates a 15-Minute Booking Hold on Vehicle #2
-  console.log('\n[3] Customer Creating 15-Minute Booking Hold on Vehicle #2 (Swift ZXi)...');
-  const startTime = new Date(Date.now() + 86400000 * 2).toISOString();
-  const endTime = new Date(Date.now() + 86400000 * 4).toISOString();
+  // 3. Customer creates a 15-Minute Booking Hold on Vehicle #5 (Tata Nexon EV - Contributor Attached)
+  console.log('\n[3] Customer Creating 15-Minute Booking Hold on Vehicle #5 (Tata Nexon EV)...');
+  const daysOffset = 10 + Math.floor(Math.random() * 50);
+  const startTime = new Date(Date.now() + 86400000 * daysOffset).toISOString();
+  const endTime = new Date(Date.now() + 86400000 * (daysOffset + 3)).toISOString();
   const holdRes = await post('/api/v1/bookings/holds', {
-    vehicleId: 2,
+    vehicleId: 5,
     startTime: startTime,
     endTime: endTime,
     pickupLocationId: 4,
+    dropoffLocationId: 4,
     returnLocationId: 4
   }, custToken);
   console.log('Hold Creation Status:', holdRes.status);
