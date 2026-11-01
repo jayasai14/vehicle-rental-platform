@@ -87,4 +87,29 @@ public class User {
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
     public Set<Role> getRoles() { return roles; }
     public void setRoles(Set<Role> roles) { this.roles = roles; }
+
+    public String getFullName() {
+        if (firstName == null) return lastName != null ? lastName : "";
+        if (lastName == null) return firstName;
+        return firstName + " " + lastName;
+    }
+
+    public void setFullName(String fullName) {
+        if (fullName == null || fullName.isBlank()) {
+            this.firstName = "";
+            this.lastName = "";
+        } else {
+            String[] parts = fullName.trim().split("\\s+", 2);
+            this.firstName = parts[0];
+            this.lastName = parts.length > 1 ? parts[1] : "";
+        }
+    }
+
+    public boolean isActive() {
+        return this.status == UserStatus.ACTIVE || this.status == UserStatus.PENDING_VERIFICATION;
+    }
+
+    public void setActive(boolean active) {
+        this.status = active ? UserStatus.ACTIVE : UserStatus.SUSPENDED;
+    }
 }

@@ -37,6 +37,20 @@ public class JwtTokenProvider {
                 .compact();
     }
 
+    public String generateToken(String email, java.util.Set<String> roles) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + accessTokenExpirationMs);
+
+        return Jwts.builder()
+                .subject(email)
+                .claim("email", email)
+                .claim("roles", new java.util.ArrayList<>(roles))
+                .issuedAt(now)
+                .expiration(expiryDate)
+                .signWith(key)
+                .compact();
+    }
+
     public Long getUserIdFromToken(String token) {
         Claims claims = Jwts.parser()
                 .verifyWith(key)

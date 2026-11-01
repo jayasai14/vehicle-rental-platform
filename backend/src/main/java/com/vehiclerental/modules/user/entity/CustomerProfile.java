@@ -58,4 +58,20 @@ public class CustomerProfile {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+
+    @Transient
+    private String preferredLanguage = "English";
+
+    @Transient
+    private Integer totalCompletedTrips = 0;
+
+    @Transient
+    private boolean suspended = false;
+
+    public String getPreferredLanguage() { return preferredLanguage; }
+    public void setPreferredLanguage(String preferredLanguage) { this.preferredLanguage = preferredLanguage; }
+    public Integer getTotalCompletedTrips() { return totalCompletedTrips; }
+    public void setTotalCompletedTrips(Integer totalCompletedTrips) { this.totalCompletedTrips = totalCompletedTrips; }
+    public boolean isSuspended() { return suspended; }
+    public void setSuspended(boolean suspended) { this.suspended = suspended; }
 }

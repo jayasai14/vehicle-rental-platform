@@ -46,4 +46,10 @@ public class RefreshToken {
     public void setExpiresAt(LocalDateTime expiresAt) { this.expiresAt = expiresAt; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+
+    public String getToken() { return tokenHash; }
+    public void setToken(String token) {
+        this.tokenHash = token;
+        if (this.familyId == null) this.familyId = token;
+    }
 }

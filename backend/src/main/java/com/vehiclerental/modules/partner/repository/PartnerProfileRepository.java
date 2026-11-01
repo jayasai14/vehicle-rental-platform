@@ -10,5 +10,5 @@ import java.util.Optional;
 @Repository
 public interface PartnerProfileRepository extends JpaRepository<PartnerProfile, Long> {
     Optional<PartnerProfile> findByUserId(Long userId);
-    List<PartnerProfile> findByApplicationStatus(PartnerProfile.ApplicationStatus status);
+    List<PartnerProfile> findByVerificationStatus(PartnerProfile.PartnerVerificationStatus status);
 }

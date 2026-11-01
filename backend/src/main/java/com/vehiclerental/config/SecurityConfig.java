@@ -44,16 +44,14 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(
                                 "/api/v1/auth/**",
-                                "/api/v1/cities/**",
-                                "/api/v1/pickup-locations/**",
+                                "/api/v1/locations/**",
                                 "/api/v1/vehicles/**",
+                                "/api/v1/reviews/**",
                                 "/api/v1/files/**",
                                 "/api/v1/health",
                                 "/error"
                         ).permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
-                        .requestMatchers("/api/v1/partner/**").hasAnyRole("RENTAL_PARTNER", "ADMIN")
-                        .requestMatchers("/api/v1/contributor/**").hasAnyRole("VEHICLE_CONTRIBUTOR", "ADMIN")
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
