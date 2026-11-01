@@ -4,7 +4,7 @@ import api from './client';
 export const authApi = {
   login: (credentials) => api.post('/auth/login', credentials),
   register: (data) => api.post('/auth/register', data),
-  logout: () => api.post('/auth/logout'),
+  logout: (refreshToken) => api.post('/auth/logout', { refreshToken }),
   refreshToken: (refreshToken) => api.post('/auth/refresh', { refreshToken }),
   getProfile: () => api.get('/auth/profile'),
   updateProfile: (data) => api.put('/auth/profile', data),

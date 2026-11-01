@@ -160,4 +160,14 @@ public class VehicleDto {
         @NotBlank
         private String reason;
     }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateStatusRequest {
+        private String status;
+        private String listingStatus;
+    }
 }

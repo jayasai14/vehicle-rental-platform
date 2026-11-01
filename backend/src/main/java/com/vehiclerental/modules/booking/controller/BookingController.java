@@ -1,5 +1,6 @@
 package com.vehiclerental.modules.booking.controller;
 
+import com.vehiclerental.common.exception.BadRequestException;
 import com.vehiclerental.common.response.ApiResponse;
 import com.vehiclerental.common.response.PagedResponse;
 import com.vehiclerental.common.security.SecurityUtils;
@@ -36,13 +37,42 @@ public class BookingController {
 
     @GetMapping({"/booking-holds/{id}", "/bookings/holds/{id}"})
     public ResponseEntity<ApiResponse<BookingDto.HoldResponseDto>> getHold(@PathVariable Long id) {
-        return ResponseEntity.ok(ApiResponse.success(bookingService.getHoldById(id), "Hold retrieved"));
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElse(null);
+        Long userId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(ApiResponse.success(bookingService.getHoldById(userId, id), "Hold retrieved"));
+    }
+
+    @DeleteMapping({"/booking-holds/{id}", "/bookings/holds/{id}"})
+    public ResponseEntity<ApiResponse<Void>> cancelHold(@PathVariable Long id) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        bookingService.releaseHold(user.getId(), id);
+        return ResponseEntity.ok(ApiResponse.success(null, "Booking hold released successfully"));
     }
 
     @PostMapping("/bookings/confirm/{holdId}")
     public ResponseEntity<ApiResponse<BookingDto.BookingResponseDto>> confirmBooking(@PathVariable Long holdId) {
-        BookingDto.BookingResponseDto booking = bookingService.confirmBookingFromHold(holdId);
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        BookingDto.BookingResponseDto booking = bookingService.confirmBookingFromHold(user.getId(), holdId);
         return ResponseEntity.ok(ApiResponse.success(booking, "Booking confirmed successfully"));
+    }
+
+    @PostMapping("/bookings/{id}/extend")
+    public ResponseEntity<ApiResponse<BookingDto.ExtensionResponseDto>> requestExtension(
+            @PathVariable Long id,
+            @RequestBody(required = false) java.util.Map<String, Object> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        Integer hours = body != null && body.get("requestedHours") != null ? ((Number) body.get("requestedHours")).intValue() : null;
+        java.time.LocalDateTime requestedEnd = null;
+        if (body != null && body.get("requestedEndTime") != null) {
+            requestedEnd = java.time.LocalDateTime.parse(body.get("requestedEndTime").toString());
+        }
+        BookingDto.ExtensionResponseDto ext = bookingService.extendBooking(user.getId(), id, hours, requestedEnd);
+        return ResponseEntity.ok(ApiResponse.success(ext, "Extension requested successfully"));
     }
 
     @PostMapping("/bookings/{id}/cancel")
@@ -78,12 +108,29 @@ public class BookingController {
             @PathVariable Long bookingId,
             @RequestBody(required = false) java.util.Map<String, Object> body
     ) {
+        if (body == null) {
+            throw new BadRequestException("Request body with odometer and fuel is required");
+        }
+        Object odoObj = body.get("odometerReading") != null ? body.get("odometerReading") : body.get("odometerReadingKm");
+        Object fuelObj = body.get("fuelPercent") != null ? body.get("fuelPercent") : body.get("fuelOrBatteryLevelPercent");
+        if (odoObj == null) {
+            throw new BadRequestException("odometerReading is required for handover");
+        }
+        if (fuelObj == null) {
+            throw new BadRequestException("fuelPercent is required for handover");
+        }
+        int odometer = ((Number) odoObj).intValue();
+        int fuel = ((Number) fuelObj).intValue();
+        if (odometer < 0) {
+            throw new BadRequestException("Odometer reading must be non-negative");
+        }
+        if (fuel < 0 || fuel > 100) {
+            throw new BadRequestException("Fuel level must be between 0 and 100 percent");
+        }
+        String notes = body.get("conditionNotes") != null ? body.get("conditionNotes").toString() : "Vehicle delivered in pristine condition";
+
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
-
-        Integer odometer = body != null && body.get("odometerReading") != null ? ((Number) body.get("odometerReading")).intValue() : 24500;
-        Integer fuel = body != null && body.get("fuelPercent") != null ? ((Number) body.get("fuelPercent")).intValue() : 100;
-        String notes = body != null && body.get("conditionNotes") != null ? body.get("conditionNotes").toString() : "Vehicle delivered in pristine condition";
 
         BookingDto.SubmitInspectionRequest req = BookingDto.SubmitInspectionRequest.builder()
                 .bookingId(bookingId)
@@ -95,7 +142,7 @@ public class BookingController {
                 .partnerSignatureConfirmed(true)
                 .build();
         bookingService.conductInspection(user.getId(), req);
-        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(bookingId), "Pre-rental handover completed"));
+        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(user.getId(), bookingId), "Pre-rental handover completed"));
     }
 
     @PostMapping({"/partners/bookings/{bookingId}/return", "/bookings/{bookingId}/return"})
@@ -104,12 +151,29 @@ public class BookingController {
             @PathVariable Long bookingId,
             @RequestBody(required = false) java.util.Map<String, Object> body
     ) {
+        if (body == null) {
+            throw new BadRequestException("Request body with odometer and fuel is required");
+        }
+        Object odoObj = body.get("odometerReading") != null ? body.get("odometerReading") : body.get("odometerReadingKm");
+        Object fuelObj = body.get("fuelPercent") != null ? body.get("fuelPercent") : body.get("fuelOrBatteryLevelPercent");
+        if (odoObj == null) {
+            throw new BadRequestException("odometerReading is required for return");
+        }
+        if (fuelObj == null) {
+            throw new BadRequestException("fuelPercent is required for return");
+        }
+        int odometer = ((Number) odoObj).intValue();
+        int fuel = ((Number) fuelObj).intValue();
+        if (odometer < 0) {
+            throw new BadRequestException("Odometer reading must be non-negative");
+        }
+        if (fuel < 0 || fuel > 100) {
+            throw new BadRequestException("Fuel level must be between 0 and 100 percent");
+        }
+        String notes = body.get("conditionNotes") != null ? body.get("conditionNotes").toString() : "Vehicle returned cleanly";
+
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
-
-        Integer odometer = body != null && body.get("odometerReading") != null ? ((Number) body.get("odometerReading")).intValue() : 24820;
-        Integer fuel = body != null && body.get("fuelPercent") != null ? ((Number) body.get("fuelPercent")).intValue() : 95;
-        String notes = body != null && body.get("conditionNotes") != null ? body.get("conditionNotes").toString() : "Vehicle returned cleanly";
 
         BookingDto.SubmitInspectionRequest req = BookingDto.SubmitInspectionRequest.builder()
                 .bookingId(bookingId)
@@ -121,7 +185,7 @@ public class BookingController {
                 .partnerSignatureConfirmed(true)
                 .build();
         bookingService.conductInspection(user.getId(), req);
-        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(bookingId), "Post-rental return completed"));
+        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(user.getId(), bookingId), "Post-rental return completed"));
     }
 
     @GetMapping("/bookings/my")
@@ -151,6 +215,9 @@ public class BookingController {
 
     @GetMapping("/bookings/{id}")
     public ResponseEntity<ApiResponse<BookingDto.BookingResponseDto>> getBookingById(@PathVariable Long id) {
-        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(id), "Booking retrieved"));
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElse(null);
+        Long userId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(ApiResponse.success(bookingService.getBookingById(userId, id), "Booking retrieved"));
     }
 }

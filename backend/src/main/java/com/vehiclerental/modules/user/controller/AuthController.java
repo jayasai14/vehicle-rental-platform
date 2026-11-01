@@ -43,7 +43,7 @@ public class AuthController {
         return ResponseEntity.ok(ApiResponse.success(null, "Logged out successfully"));
     }
 
-    @GetMapping("/me")
+    @GetMapping({"/me", "/profile"})
     public ResponseEntity<ApiResponse<AuthDto.UserProfileDto>> getCurrentUser() {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email)
@@ -52,7 +52,18 @@ public class AuthController {
         return ResponseEntity.ok(ApiResponse.success(profile, "Profile retrieved successfully"));
     }
 
-    @PostMapping("/driving-licence")
+    @PutMapping({"/me", "/profile"})
+    public ResponseEntity<ApiResponse<AuthDto.UserProfileDto>> updateProfile(
+            @Valid @RequestBody AuthDto.UpdateProfileRequest request
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Current user not found"));
+        AuthDto.UserProfileDto updated = authService.updateProfile(user.getId(), request);
+        return ResponseEntity.ok(ApiResponse.success(updated, "Profile updated successfully"));
+    }
+
+    @PostMapping({"/driving-licence", "/kyc"})
     public ResponseEntity<ApiResponse<AuthDto.DrivingLicenceDto>> submitDrivingLicence(
             @Valid @RequestBody AuthDto.DrivingLicenceSubmitRequest request
     ) {

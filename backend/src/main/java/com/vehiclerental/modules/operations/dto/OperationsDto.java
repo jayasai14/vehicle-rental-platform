@@ -138,8 +138,25 @@ public class OperationsDto {
     @Setter
     @NoArgsConstructor
     @AllArgsConstructor
+    @Builder
     public static class ResolveDisputeRequest {
         private String resolutionNotes;
         private BigDecimal approvedRefundOrDeductionAmount;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class DisputedDepositDto {
+        private Long id;
+        private Long depositId;
+        private Long bookingId;
+        private String bookingCode;
+        private String deductionReason;
+        private BigDecimal proposedDeductionAmount;
+        private String status;
+        private String evidenceDocumentKey;
     }
 }

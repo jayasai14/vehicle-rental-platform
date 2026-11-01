@@ -21,6 +21,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -106,5 +108,48 @@ public class AdminService {
         }
 
         auditLogService.recordAction(adminUserId, "ARBITRATE_DEPOSIT_DEDUCTION", "deposit_deductions", String.valueOf(deductionId), request.getResolutionNotes());
+    }
+
+    @Transactional(readOnly = true)
+    public List<com.vehiclerental.modules.payment.dto.PaymentDto.RentalFeeRefundDto> getDisputedRefunds() {
+        return refundRepository.findByRefundStatus(RentalFeeRefund.RefundStatus.DISPUTED_BY_CUSTOMER).stream()
+                .map(r -> com.vehiclerental.modules.payment.dto.PaymentDto.RentalFeeRefundDto.builder()
+                        .id(r.getId())
+                        .refundReference(r.getRefundReference())
+                        .bookingId(r.getBooking() != null ? r.getBooking().getId() : null)
+                        .demandId(r.getDemand() != null ? r.getDemand().getId() : null)
+                        .managerPartnerId(r.getManagerPartner() != null ? r.getManagerPartner().getId() : null)
+                        .customerUserId(r.getCustomerUser() != null ? r.getCustomerUser().getId() : null)
+                        .refundReason(r.getRefundReason() != null ? r.getRefundReason().name() : null)
+                        .grossAmountPaid(r.getGrossAmountPaid())
+                        .cancellationFeeDeducted(r.getCancellationFeeDeducted())
+                        .refundAmount(r.getRefundAmount())
+                        .refundStatus(r.getRefundStatus() != null ? r.getRefundStatus().name() : null)
+                        .refundMethod(r.getRefundMethod() != null ? r.getRefundMethod().name() : null)
+                        .partnerTransactionReference(r.getPartnerTransactionReference())
+                        .receiptObjectKey(r.getReceiptObjectKey())
+                        .disbursedAt(r.getDisbursedAt())
+                        .acknowledgedAt(r.getAcknowledgedAt())
+                        .disputeReason(r.getDisputeReason())
+                        .disputeTicketId(r.getDisputeTicket() != null ? r.getDisputeTicket().getId() : null)
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<OperationsDto.DisputedDepositDto> getDisputedDeposits() {
+        List<DepositDeduction> deductions = deductionRepository.findByStatus(DepositDeduction.DeductionStatus.PROPOSED);
+        return deductions.stream()
+                .map(d -> OperationsDto.DisputedDepositDto.builder()
+                        .id(d.getId())
+                        .depositId(d.getDeposit().getId())
+                        .bookingId(d.getDeposit().getBooking() != null ? d.getDeposit().getBooking().getId() : null)
+                        .bookingCode(d.getDeposit().getBooking() != null ? d.getDeposit().getBooking().getBookingCode() : null)
+                        .deductionReason(d.getDeductionReason().name())
+                        .proposedDeductionAmount(d.getProposedDeductionAmount())
+                        .status(d.getStatus().name())
+                        .evidenceDocumentKey(d.getEvidenceDocumentKey())
+                        .build())
+                .collect(Collectors.toList());
     }
 }

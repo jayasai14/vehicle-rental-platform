@@ -1,6 +1,7 @@
 package com.vehiclerental.modules.partner.service;
 
 import com.vehiclerental.common.exception.BadRequestException;
+import com.vehiclerental.common.exception.ForbiddenException;
 import com.vehiclerental.common.exception.ResourceNotFoundException;
 import com.vehiclerental.modules.location.entity.City;
 import com.vehiclerental.modules.location.repository.CityRepository;
@@ -98,6 +99,19 @@ public class PartnerService {
         PartnerProfile partner = partnerProfileRepository.findByUserId(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Partner profile not found"));
         return mapToDto(partner);
+    }
+
+    @Transactional(readOnly = true)
+    public PartnerProfile validateVerifiedPartner(Long userId) {
+        PartnerProfile partner = partnerProfileRepository.findByUserId(userId)
+                .orElseThrow(() -> new ForbiddenException("User does not have an associated partner profile"));
+        if (!partner.isActive()) {
+            throw new ForbiddenException("Partner account is deactivated");
+        }
+        if (partner.getVerificationStatus() != PartnerProfile.PartnerVerificationStatus.VERIFIED) {
+            throw new ForbiddenException("Partner account is not verified (status: " + partner.getVerificationStatus() + ")");
+        }
+        return partner;
     }
 
     @Transactional(readOnly = true)

@@ -19,6 +19,8 @@ public interface SecurityDepositRefundRepository extends JpaRepository<SecurityD
 
     List<SecurityDepositRefund> findByCustomerUserId(Long customerUserId);
 
+    List<SecurityDepositRefund> findByRefundStatus(SecurityDepositRefund.RefundStatus status);
+
     Optional<SecurityDepositRefund> findByManagerPartnerIdAndPartnerTransactionReference(
             Long managerPartnerId,
             String partnerTransactionReference

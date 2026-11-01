@@ -140,7 +140,7 @@ class AuthServiceTest {
         rt.setExpiresAt(LocalDateTime.now().plusDays(5));
         rt.setRevoked(false);
 
-        when(refreshTokenRepository.findByTokenHash(oldToken)).thenReturn(Optional.of(rt));
+        when(refreshTokenRepository.findByTokenHash(anyString())).thenReturn(Optional.of(rt));
         when(jwtTokenProvider.generateToken(any(), any(), any())).thenReturn("new.access.token");
 
         AuthDto.AuthResponse response = authService.refreshToken(oldToken);

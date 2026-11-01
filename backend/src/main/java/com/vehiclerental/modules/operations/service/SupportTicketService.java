@@ -1,5 +1,6 @@
 package com.vehiclerental.modules.operations.service;
 
+import com.vehiclerental.common.exception.ForbiddenException;
 import com.vehiclerental.common.exception.ResourceNotFoundException;
 import com.vehiclerental.modules.booking.entity.Booking;
 import com.vehiclerental.modules.booking.repository.BookingRepository;
@@ -62,6 +63,12 @@ public class SupportTicketService {
         SupportTicket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
 
+        boolean isAdmin = user.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+        boolean isOwner = ticket.getUser().getId().equals(userId);
+        if (!isAdmin && !isOwner) {
+            throw new ForbiddenException("Unauthorized to send messages on this ticket");
+        }
+
         SupportTicketMessage msg = SupportTicketMessage.builder()
                 .ticket(ticket)
                 .senderUser(user)
@@ -91,10 +98,29 @@ public class SupportTicketService {
     }
 
     @Transactional(readOnly = true)
-    public OperationsDto.TicketDto getTicketById(Long ticketId) {
+    public OperationsDto.TicketDto getTicketById(Long userId, Long ticketId) {
         SupportTicket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
+        if (userId != null) {
+            User user = userRepository.findById(userId).orElseThrow();
+            boolean isAdmin = user.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+            boolean isOwner = ticket.getUser().getId().equals(userId);
+            if (!isAdmin && !isOwner) {
+                throw new ForbiddenException("Unauthorized access to this ticket");
+            }
+        }
         return mapTicketToDto(ticket);
+    }
+
+    @Transactional(readOnly = true)
+    public OperationsDto.TicketDto getTicketById(Long ticketId) {
+        return getTicketById(null, ticketId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<OperationsDto.TicketMessageDto> getTicketMessages(Long userId, Long ticketId) {
+        OperationsDto.TicketDto ticket = getTicketById(userId, ticketId);
+        return ticket.getMessages();
     }
 
     @Transactional

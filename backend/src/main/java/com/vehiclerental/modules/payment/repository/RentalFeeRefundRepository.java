@@ -23,6 +23,8 @@ public interface RentalFeeRefundRepository extends JpaRepository<RentalFeeRefund
 
     List<RentalFeeRefund> findByCustomerUserId(Long customerUserId);
 
+    List<RentalFeeRefund> findByRefundStatus(RentalFeeRefund.RefundStatus status);
+
     @Query("SELECT COALESCE(SUM(r.refundAmount), 0) FROM RentalFeeRefund r " +
            "WHERE r.demand.id = :demandId AND r.refundStatus <> 'CANCELLED'")
     BigDecimal getCumulativeUnvoidedRefundAmountForDemand(@Param("demandId") Long demandId);

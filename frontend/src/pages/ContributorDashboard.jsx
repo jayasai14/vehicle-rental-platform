@@ -156,7 +156,7 @@ export const ContributorDashboard = () => {
             {user?.fullName || 'Car Owner'} &bull; Fleet Monetization
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Attach vehicles to certified Vijayawada partners, monitor revenue splits, and track direct bank payouts.
+            Attach vehicles to certified Vijayawada partners, monitor fixed-cut booking earnings, and track direct bank payouts.
           </p>
         </div>
 
@@ -386,9 +386,9 @@ export const ContributorDashboard = () => {
 
                 <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1.5 text-xs">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Agreed Contributor Cut:</span>
+                    <span className="text-slate-500">Agreed Fixed Cut:</span>
                     <span className="font-mono font-bold text-emerald-400 text-sm">
-                      {a.contributorCutPercentage || '70.0'}% of Rental Fees
+                      ₹{a.fixedContributorCutPerBooking || '600'} per booking
                     </span>
                   </div>
                   <div className="flex justify-between">

@@ -1,6 +1,7 @@
 package com.vehiclerental.modules.vehicle.service;
 
 import com.vehiclerental.common.exception.BadRequestException;
+import com.vehiclerental.common.exception.ForbiddenException;
 import com.vehiclerental.common.exception.ResourceNotFoundException;
 import com.vehiclerental.modules.booking.entity.Booking;
 import com.vehiclerental.modules.booking.entity.BookingHold;
@@ -10,6 +11,7 @@ import com.vehiclerental.modules.location.entity.PartnerHub;
 import com.vehiclerental.modules.location.repository.PartnerHubRepository;
 import com.vehiclerental.modules.partner.entity.PartnerProfile;
 import com.vehiclerental.modules.partner.repository.PartnerProfileRepository;
+import com.vehiclerental.modules.partner.service.PartnerService;
 import com.vehiclerental.modules.user.entity.User;
 import com.vehiclerental.modules.user.repository.UserRepository;
 import com.vehiclerental.modules.vehicle.dto.VehicleDto;
@@ -37,6 +39,7 @@ public class VehicleService {
     private final VehicleFeatureRepository featureRepository;
     private final VehicleMaintenanceBlockRepository maintenanceRepository;
     private final PartnerProfileRepository partnerProfileRepository;
+    private final PartnerService partnerService;
     private final PartnerHubRepository partnerHubRepository;
     private final UserRepository userRepository;
     private final BookingRepository bookingRepository;
@@ -89,8 +92,7 @@ public class VehicleService {
 
     @Transactional(readOnly = true)
     public List<VehicleDto.VehicleCardDto> getPartnerFleet(Long userId) {
-        PartnerProfile partner = partnerProfileRepository.findByUserId(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Partner profile not found"));
+        PartnerProfile partner = partnerService.validateVerifiedPartner(userId);
         return vehicleRepository.findByManagerPartnerId(partner.getId()).stream()
                 .map(this::mapToCardDto)
                 .collect(Collectors.toList());
@@ -98,8 +100,7 @@ public class VehicleService {
 
     @Transactional
     public VehicleDto.VehicleDetailDto createVehicle(Long userId, VehicleDto.VehicleCreateRequest request) {
-        PartnerProfile partner = partnerProfileRepository.findByUserId(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("Partner profile not found"));
+        PartnerProfile partner = partnerService.validateVerifiedPartner(userId);
 
         if (vehicleRepository.findByRegistrationNumber(request.getRegistrationNumber()).isPresent()) {
             throw new BadRequestException("Vehicle with registration " + request.getRegistrationNumber() + " already exists");
@@ -171,10 +172,104 @@ public class VehicleService {
     }
 
     @Transactional
+    public VehicleDto.VehicleDetailDto updateVehicle(Long userId, Long vehicleId, VehicleDto.VehicleCreateRequest request) {
+        PartnerProfile partner = partnerService.validateVerifiedPartner(userId);
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found with id: " + vehicleId));
+
+        if (!vehicle.getManagerPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Vehicle does not belong to your partner profile");
+        }
+
+        vehicle.setMake(request.getMake());
+        vehicle.setModel(request.getModel());
+        vehicle.setYearOfManufacture(request.getYearOfManufacture());
+        if (request.getCategory() != null) {
+            vehicle.setCategory(Vehicle.VehicleCategory.valueOf(request.getCategory().toUpperCase()));
+        }
+        if (request.getTransmission() != null) {
+            vehicle.setTransmission(Vehicle.TransmissionType.valueOf(request.getTransmission().toUpperCase()));
+        }
+        if (request.getFuelType() != null) {
+            vehicle.setFuelType(Vehicle.FuelType.valueOf(request.getFuelType().toUpperCase()));
+        }
+        if (request.getSeatingCapacity() != null) {
+            vehicle.setSeatingCapacity(request.getSeatingCapacity());
+        }
+        if (request.getOdometerReadingKm() != null) {
+            vehicle.setOdometerReadingKm(request.getOdometerReadingKm());
+        }
+        if (request.getAssignedHubId() != null) {
+            PartnerHub hub = partnerHubRepository.findById(request.getAssignedHubId()).orElse(null);
+            vehicle.setAssignedHub(hub);
+        }
+        vehicle = vehicleRepository.save(vehicle);
+
+        VehiclePricingProfile pricing = pricingRepository.findByVehicleId(vehicle.getId()).orElse(null);
+        if (pricing == null) {
+            pricing = VehiclePricingProfile.builder().vehicle(vehicle).build();
+        }
+        pricing.setHourlyRate(request.getHourlyRate());
+        pricing.setDailyRate(request.getDailyRate());
+        pricing.setWeeklyRate(request.getWeeklyRate());
+        pricing.setSecurityDepositAmount(request.getSecurityDepositAmount());
+        if (request.getFreeKmPerDay() != null) pricing.setFreeKmPerDay(request.getFreeKmPerDay());
+        if (request.getExtraKmCharge() != null) pricing.setExtraKmCharge(request.getExtraKmCharge());
+        pricingRepository.save(pricing);
+
+        if (request.getPrimaryImageUrl() != null && !request.getPrimaryImageUrl().isBlank()) {
+            List<VehicleImage> existingImages = imageRepository.findByVehicleIdOrderByDisplayOrderAsc(vehicle.getId());
+            boolean exists = existingImages.stream().anyMatch(img -> request.getPrimaryImageUrl().equals(img.getStorageObjectKey()));
+            if (!exists) {
+                VehicleImage image = VehicleImage.builder()
+                        .vehicle(vehicle)
+                        .storageObjectKey(request.getPrimaryImageUrl())
+                        .isPrimary(true)
+                        .displayOrder(0)
+                        .build();
+                imageRepository.save(image);
+            }
+        }
+
+        return mapToDetailDto(vehicle);
+    }
+
+    @Transactional
+    public VehicleDto.VehicleDetailDto updateVehicleStatus(Long userId, Long vehicleId, String statusStr) {
+        PartnerProfile partner = partnerService.validateVerifiedPartner(userId);
+        Vehicle vehicle = vehicleRepository.findById(vehicleId)
+                .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found with id: " + vehicleId));
+
+        if (!vehicle.getManagerPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Vehicle does not belong to your partner profile");
+        }
+
+        if (statusStr != null && !statusStr.isBlank()) {
+            try {
+                vehicle.setListingStatus(Vehicle.ListingStatus.valueOf(statusStr.toUpperCase()));
+            } catch (IllegalArgumentException e) {
+                try {
+                    vehicle.setCurrentCustodyStatus(Vehicle.CustodyStatus.valueOf(statusStr.toUpperCase()));
+                } catch (IllegalArgumentException ex) {
+                    throw new BadRequestException("Invalid status value: " + statusStr);
+                }
+            }
+            vehicle = vehicleRepository.save(vehicle);
+        }
+
+        return mapToDetailDto(vehicle);
+    }
+
+    @Transactional
     public VehicleDto.MaintenanceBlockDto createMaintenanceBlock(Long userId, Long vehicleId, VehicleDto.CreateMaintenanceBlockRequest request) {
+        PartnerProfile partner = partnerService.validateVerifiedPartner(userId);
         User user = userRepository.findById(userId).orElseThrow();
         Vehicle vehicle = vehicleRepository.findById(vehicleId)
                 .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found"));
+
+        if (!vehicle.getManagerPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Vehicle does not belong to your partner profile");
+        }
 
         if (request.getEndTime().isBefore(request.getStartTime())) {
             throw new BadRequestException("End time must be after start time");

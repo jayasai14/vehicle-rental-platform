@@ -91,6 +91,38 @@ public class ContributorController {
         return ResponseEntity.ok(ApiResponse.success(contributorService.getContributorAgreements(user.getId()), "Agreements retrieved"));
     }
 
+    @GetMapping("/contributors/vehicles")
+    public ResponseEntity<ApiResponse<List<ContributorDto.ContributorVehicleDto>>> getContributorVehicles() {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        return ResponseEntity.ok(ApiResponse.success(contributorService.getContributorVehicles(user.getId()), "Contributor vehicles retrieved"));
+    }
+
+    @PostMapping("/contributors/agreements/{agreementId}/withdraw")
+    public ResponseEntity<ApiResponse<ContributorDto.AgreementDto>> requestWithdrawal(
+            @PathVariable Long agreementId,
+            @RequestBody(required = false) java.util.Map<String, String> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String reason = body != null ? body.getOrDefault("reason", "Contributor requested withdrawal") : "Contributor requested withdrawal";
+        ContributorDto.AgreementDto ag = contributorService.requestWithdrawal(user.getId(), agreementId, reason);
+        return ResponseEntity.ok(ApiResponse.success(ag, "Agreement withdrawal processed"));
+    }
+
+    @PostMapping({"/partners/applications/{applicationId}/reject", "/partners/incoming-applications/{applicationId}/reject"})
+    @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
+    public ResponseEntity<ApiResponse<ContributorDto.ContributorApplicationDto>> rejectApplication(
+            @PathVariable Long applicationId,
+            @RequestBody(required = false) java.util.Map<String, String> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String reason = body != null ? body.getOrDefault("reason", body.get("rejectionReason")) : "Application rejected by partner";
+        ContributorDto.ContributorApplicationDto app = contributorService.rejectApplication(user.getId(), applicationId, reason);
+        return ResponseEntity.ok(ApiResponse.success(app, "Application rejected"));
+    }
+
     @GetMapping("/partners/agreements")
     @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
     public ResponseEntity<ApiResponse<List<ContributorDto.AgreementDto>>> getPartnerAgreements() {

@@ -1,13 +1,44 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { authApi } from '../api/endpoints';
 
+export const normalizeUser = (raw) => {
+  if (!raw) return null;
+  const u = raw.user || raw;
+
+  const rawRoles = u.roles || raw.roles || [];
+  const roles = (Array.isArray(rawRoles) ? rawRoles : Array.from(rawRoles)).map(r => {
+    const str = typeof r === 'string' ? r : (r?.name || '');
+    return str.replace(/^ROLE_/, '').replace(/^RENTAL_/, '').replace(/^VEHICLE_/, '');
+  });
+
+  let primaryRole = 'CUSTOMER';
+  if (roles.includes('ADMIN')) primaryRole = 'ADMIN';
+  else if (roles.includes('PARTNER') || roles.includes('RENTAL_PARTNER')) primaryRole = 'PARTNER';
+  else if (roles.includes('CONTRIBUTOR') || roles.includes('VEHICLE_CONTRIBUTOR')) primaryRole = 'CONTRIBUTOR';
+  else if (roles.length > 0) primaryRole = roles[0];
+
+  return {
+    id: u.id || raw.userId || u.userId,
+    fullName: u.fullName || raw.fullName || '',
+    email: u.email || raw.email || '',
+    phoneNumber: u.phoneNumber || raw.phoneNumber || '',
+    roles,
+    role: primaryRole,
+    customerProfile: u.customerProfile || null,
+    drivingLicence: u.drivingLicence || null,
+    emailVerified: !!u.emailVerified,
+    phoneVerified: !!u.phoneVerified,
+    active: u.active !== false,
+  };
+};
+
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(() => {
     try {
       const stored = localStorage.getItem('user');
-      return stored ? JSON.parse(stored) : null;
+      return stored ? normalizeUser(JSON.parse(stored)) : null;
     } catch {
       return null;
     }
@@ -35,8 +66,9 @@ export const AuthProvider = ({ children }) => {
         try {
           const res = await authApi.getProfile();
           if (res.data?.data) {
-            setUser(res.data.data);
-            localStorage.setItem('user', JSON.stringify(res.data.data));
+            const normalized = normalizeUser(res.data.data);
+            setUser(normalized);
+            localStorage.setItem('user', JSON.stringify(normalized));
           }
         } catch (err) {
           console.warn('Session verification error:', err);
@@ -50,29 +82,34 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (email, password) => {
     const res = await authApi.login({ email, password });
-    const { accessToken, refreshToken, user: authUser } = res.data.data;
-    localStorage.setItem('accessToken', accessToken);
-    localStorage.setItem('refreshToken', refreshToken);
+    const data = res.data.data;
+    const authUser = normalizeUser(data.user || data);
+    localStorage.setItem('accessToken', data.accessToken);
+    localStorage.setItem('refreshToken', data.refreshToken);
     localStorage.setItem('user', JSON.stringify(authUser));
-    setToken(accessToken);
+    setToken(data.accessToken);
     setUser(authUser);
     return authUser;
   };
 
   const register = async (data) => {
     const res = await authApi.register(data);
-    const { accessToken, refreshToken, user: authUser } = res.data.data;
-    localStorage.setItem('accessToken', accessToken);
-    localStorage.setItem('refreshToken', refreshToken);
+    const respData = res.data.data;
+    const authUser = normalizeUser(respData.user || respData);
+    localStorage.setItem('accessToken', respData.accessToken);
+    localStorage.setItem('refreshToken', respData.refreshToken);
     localStorage.setItem('user', JSON.stringify(authUser));
-    setToken(accessToken);
+    setToken(respData.accessToken);
     setUser(authUser);
     return authUser;
   };
 
   const logout = async () => {
     try {
-      await authApi.logout();
+      const refreshToken = localStorage.getItem('refreshToken');
+      if (refreshToken) {
+        await authApi.logout(refreshToken);
+      }
     } catch {
       // Ignore network errors on logout
     } finally {
@@ -84,8 +121,11 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Quick switcher for demo and testing convenience
+  // Quick switcher for demo and testing convenience (Development only)
   const switchDemoRole = async (targetRole) => {
+    if (!import.meta.env.DEV) {
+      throw new Error('Demo persona switcher is restricted to local development');
+    }
     const demoAccounts = {
       CUSTOMER: { email: 'customer@example.com', pass: 'Password@123' },
       PARTNER: { email: 'partner@example.com', pass: 'Password@123' },
@@ -108,10 +148,10 @@ export const AuthProvider = ({ children }) => {
     switchDemoRole,
     isAuthenticated: !!token && !!user,
     role: user?.role || null,
-    isCustomer: user?.role === 'CUSTOMER',
-    isPartner: user?.role === 'PARTNER',
-    isContributor: user?.role === 'CONTRIBUTOR',
-    isAdmin: user?.role === 'ADMIN',
+    isCustomer: user?.role === 'CUSTOMER' || user?.roles?.includes('CUSTOMER'),
+    isPartner: user?.role === 'PARTNER' || user?.roles?.includes('PARTNER') || user?.roles?.includes('RENTAL_PARTNER'),
+    isContributor: user?.role === 'CONTRIBUTOR' || user?.roles?.includes('CONTRIBUTOR') || user?.roles?.includes('VEHICLE_CONTRIBUTOR'),
+    isAdmin: user?.role === 'ADMIN' || user?.roles?.includes('ADMIN'),
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -124,3 +164,5 @@ export const useAuth = () => {
   }
   return context;
 };
+
+export default AuthContext;

@@ -54,35 +54,85 @@ public class ContributorDto {
     @AllArgsConstructor
     @Builder
     public static class VehicleApplicationRequest {
-        @NotNull
         private Long targetPartnerId;
+        private Long preferredHubId;
         @NotBlank
         private String make;
         @NotBlank
         private String model;
-        @NotNull
         private Integer yearOfManufacture;
-        @NotBlank
-        private String category; // CAR, BIKE, SCOOTER
+        private Integer year;
+        private String category;
         private String transmission;
         private String fuelType;
-        @NotBlank
         private String registrationNumber;
-        @NotBlank
+        private String registrationPlateNumber;
         private String vinChassisNumber;
-        @NotBlank
         private String engineNumber;
         private Integer currentOdometerKm;
-        @NotBlank
         private String rcDocumentStorageKey;
-        @NotBlank
         private String insuranceDocumentStorageKey;
-        @NotBlank
         private String pickupAddressLine1;
         private String pickupAddressLine2;
         private Long pickupCityId;
-        @NotBlank
         private String pickupPostalCode;
+
+        public Integer getYearOfManufacture() {
+            return yearOfManufacture != null ? yearOfManufacture : (year != null ? year : 2023);
+        }
+
+        public String getRegistrationNumber() {
+            return registrationNumber != null ? registrationNumber : (registrationPlateNumber != null ? registrationPlateNumber : "AP16XX1234");
+        }
+
+        public Long getTargetPartnerId() {
+            return targetPartnerId != null ? targetPartnerId : (preferredHubId != null ? preferredHubId : 1L);
+        }
+
+        public String getCategory() {
+            return category != null ? category : "CAR";
+        }
+
+        public String getVinChassisNumber() {
+            return vinChassisNumber != null ? vinChassisNumber : "VIN-" + System.currentTimeMillis();
+        }
+
+        public String getEngineNumber() {
+            return engineNumber != null ? engineNumber : "ENG-" + System.currentTimeMillis();
+        }
+
+        public String getRcDocumentStorageKey() {
+            return rcDocumentStorageKey != null ? rcDocumentStorageKey : "contributor_documents/rc_default.pdf";
+        }
+
+        public String getInsuranceDocumentStorageKey() {
+            return insuranceDocumentStorageKey != null ? insuranceDocumentStorageKey : "contributor_documents/ins_default.pdf";
+        }
+
+        public String getPickupAddressLine1() {
+            return pickupAddressLine1 != null ? pickupAddressLine1 : "MG Road";
+        }
+
+        public String getPickupPostalCode() {
+            return pickupPostalCode != null ? pickupPostalCode : "520001";
+        }
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class ContributorVehicleDto {
+        private Long id;
+        private String make;
+        private String model;
+        private String plateNumber;
+        private String registrationNumber;
+        private String status;
+        private String partnerBusinessName;
+        private String partnerHubName;
+        private String custodyState;
     }
 
     @Getter

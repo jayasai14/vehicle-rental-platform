@@ -1,6 +1,7 @@
 package com.vehiclerental.modules.booking.service;
 
 import com.vehiclerental.common.exception.BadRequestException;
+import com.vehiclerental.common.exception.ForbiddenException;
 import com.vehiclerental.common.exception.ResourceNotFoundException;
 import com.vehiclerental.modules.booking.dto.BookingDto;
 import com.vehiclerental.modules.booking.entity.*;
@@ -12,7 +13,9 @@ import com.vehiclerental.modules.custody.repository.VehicleCustodyEventRepositor
 import com.vehiclerental.modules.location.entity.PickupLocation;
 import com.vehiclerental.modules.location.repository.PickupLocationRepository;
 import com.vehiclerental.modules.partner.entity.PartnerPaymentProfile;
+import com.vehiclerental.modules.partner.entity.PartnerProfile;
 import com.vehiclerental.modules.partner.repository.PartnerPaymentProfileRepository;
+import com.vehiclerental.modules.partner.service.PartnerService;
 import com.vehiclerental.modules.payment.entity.*;
 import com.vehiclerental.modules.payment.repository.*;
 import com.vehiclerental.modules.user.entity.User;
@@ -57,6 +60,7 @@ public class BookingService {
     private final VehicleCustodyEventRepository custodyEventRepository;
     private final PickupLocationRepository pickupLocationRepository;
     private final PartnerPaymentProfileRepository paymentProfileRepository;
+    private final PartnerService partnerService;
     private final UserRepository userRepository;
     private final VehicleService vehicleService;
 
@@ -184,6 +188,11 @@ public class BookingService {
 
     @Transactional
     public BookingDto.BookingResponseDto confirmBookingFromHold(Long holdId) {
+        return confirmBookingFromHold(null, holdId);
+    }
+
+    @Transactional
+    public BookingDto.BookingResponseDto confirmBookingFromHold(Long userId, Long holdId) {
         BookingHold hold = holdRepository.findByIdWithLock(holdId)
                 .orElseThrow(() -> new ResourceNotFoundException("Hold not found"));
 
@@ -197,11 +206,38 @@ public class BookingService {
             throw new BadRequestException("Hold has expired or was released");
         }
 
-        Vehicle vehicle = vehicleRepository.findByIdWithLock(hold.getVehicle().getId())
-                .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found"));
+        if (hold.getExpiresAt().isBefore(LocalDateTime.now())) {
+            hold.setStatus(BookingHold.HoldStatus.EXPIRED);
+            holdRepository.save(hold);
+            throw new BadRequestException("Hold TTL has expired");
+        }
+
+        if (userId != null) {
+            User actor = userRepository.findById(userId).orElseThrow();
+            boolean isAdmin = actor.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+            boolean isCustomer = hold.getCustomerUser().getId().equals(userId);
+            boolean isPartner = hold.getVehicle().getManagerPartner().getUser().getId().equals(userId);
+            if (!isAdmin && !isCustomer && !isPartner) {
+                throw new ForbiddenException("Unauthorized to confirm this booking hold");
+            }
+        }
 
         RentalPaymentDemand initialDemand = demandRepository.findByHoldId(hold.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Demand not found for hold"));
+
+        PartnerPaymentProfile ppp = paymentProfileRepository.findByPartnerId(hold.getVehicle().getManagerPartner().getId()).orElse(null);
+        boolean cashAllowed = ppp != null && ppp.isCashAtPickupEnabled();
+        if (initialDemand.getStatus() != RentalPaymentDemand.DemandStatus.SATISFIED && !cashAllowed) {
+            throw new BadRequestException("Cannot confirm booking: Rental payment demand is not satisfied (" + initialDemand.getStatus() + ") and cash-at-pickup is not enabled");
+        }
+
+        Vehicle vehicle = vehicleRepository.findByIdWithLock(hold.getVehicle().getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found"));
+
+        boolean available = vehicleService.isVehicleAvailable(vehicle.getId(), hold.getStartTime(), hold.getEndTime(), null, hold.getId());
+        if (!available) {
+            throw new BadRequestException("Vehicle is no longer available for the requested time");
+        }
 
         hold.setStatus(BookingHold.HoldStatus.CONVERTED);
         holdRepository.save(hold);
@@ -334,6 +370,26 @@ public class BookingService {
         User inspector = userRepository.findById(userId).orElseThrow();
         Booking booking = bookingRepository.findById(request.getBookingId())
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+
+        boolean isAdmin = inspector.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+        if (!isAdmin) {
+            PartnerProfile partner = partnerService.validateVerifiedPartner(userId);
+            if (!booking.getManagerPartner().getId().equals(partner.getId())) {
+                throw new ForbiddenException("Unauthorized: Only the managing partner or admin can conduct inspections for this booking");
+            }
+        }
+
+        Inspection.InspectionType type = Inspection.InspectionType.valueOf(request.getInspectionType());
+        if (type == Inspection.InspectionType.PRE_RENTAL_HANDOVER) {
+            if (booking.getBookingStatus() != Booking.BookingStatus.CONFIRMED && booking.getBookingStatus() != Booking.BookingStatus.READY_FOR_PICKUP) {
+                throw new BadRequestException("Pre-rental handover requires booking to be CONFIRMED or READY_FOR_PICKUP (current: " + booking.getBookingStatus() + ")");
+            }
+        } else if (type == Inspection.InspectionType.POST_RENTAL_RETURN) {
+            if (booking.getBookingStatus() != Booking.BookingStatus.IN_PROGRESS) {
+                throw new BadRequestException("Post-rental return requires booking to be IN_PROGRESS (current: " + booking.getBookingStatus() + ")");
+            }
+        }
+
         Vehicle vehicle = booking.getVehicle();
 
         Inspection inspection = Inspection.builder()
@@ -461,23 +517,45 @@ public class BookingService {
 
     @Transactional(readOnly = true)
     public Page<BookingDto.BookingResponseDto> getPartnerBookings(Long userId, Pageable pageable) {
-        User user = userRepository.findById(userId).orElseThrow();
-        // find partner profile
-        var partner = bookingRepository.findAll(pageable); // will filter
-        return partner.map(this::mapBookingToDto);
+        PartnerProfile partner = partnerService.validateVerifiedPartner(userId);
+        return bookingRepository.findByManagerPartnerIdOrderByCreatedAtDesc(partner.getId(), pageable)
+                .map(this::mapBookingToDto);
     }
 
     @Transactional(readOnly = true)
-    public BookingDto.BookingResponseDto getBookingById(Long bookingId) {
+    public BookingDto.BookingResponseDto getBookingById(Long userId, Long bookingId) {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+        if (userId != null) {
+            User user = userRepository.findById(userId).orElseThrow();
+            boolean isAdmin = user.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+            boolean isCustomer = booking.getCustomerUser().getId().equals(userId);
+            boolean isPartner = booking.getManagerPartner().getUser().getId().equals(userId);
+            if (!isAdmin && !isCustomer && !isPartner) {
+                throw new ForbiddenException("Unauthorized access to this booking");
+            }
+        }
         return mapBookingToDto(booking);
     }
 
     @Transactional(readOnly = true)
-    public BookingDto.HoldResponseDto getHoldById(Long holdId) {
+    public BookingDto.BookingResponseDto getBookingById(Long bookingId) {
+        return getBookingById(null, bookingId);
+    }
+
+    @Transactional(readOnly = true)
+    public BookingDto.HoldResponseDto getHoldById(Long userId, Long holdId) {
         BookingHold hold = holdRepository.findById(holdId)
                 .orElseThrow(() -> new ResourceNotFoundException("Hold not found"));
+        if (userId != null) {
+            User user = userRepository.findById(userId).orElseThrow();
+            boolean isAdmin = user.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+            boolean isCustomer = hold.getCustomerUser().getId().equals(userId);
+            boolean isPartner = hold.getVehicle().getManagerPartner().getUser().getId().equals(userId);
+            if (!isAdmin && !isCustomer && !isPartner) {
+                throw new ForbiddenException("Unauthorized access to this booking hold");
+            }
+        }
         RentalPaymentDemand demand = demandRepository.findByHoldId(hold.getId()).orElse(null);
         PartnerPaymentProfile ppp = paymentProfileRepository.findByPartnerId(hold.getVehicle().getManagerPartner().getId()).orElse(null);
 
@@ -507,6 +585,97 @@ public class BookingService {
                 .partnerUpiId(ppp != null ? ppp.getUpiId() : "")
                 .partnerQrKey(ppp != null ? ppp.getUpiQrObjectKey() : null)
                 .cashAtPickupEnabled(ppp != null && ppp.isCashAtPickupEnabled())
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public BookingDto.HoldResponseDto getHoldById(Long holdId) {
+        return getHoldById(null, holdId);
+    }
+
+    @Transactional
+    public void releaseHold(Long userId, Long holdId) {
+        BookingHold hold = holdRepository.findByIdWithLock(holdId)
+                .orElseThrow(() -> new ResourceNotFoundException("Hold not found"));
+        User user = userRepository.findById(userId).orElseThrow();
+        boolean isAdmin = user.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+        boolean isCustomer = hold.getCustomerUser().getId().equals(userId);
+        if (!isAdmin && !isCustomer) {
+            throw new ForbiddenException("Unauthorized to release this hold");
+        }
+        if (hold.getStatus() == BookingHold.HoldStatus.ACTIVE || hold.getStatus() == BookingHold.HoldStatus.VERIFICATION_PENDING) {
+            hold.setStatus(BookingHold.HoldStatus.RELEASED);
+            holdRepository.save(hold);
+        }
+    }
+
+    @Transactional
+    public BookingDto.ExtensionResponseDto extendBooking(Long userId, Long bookingId, Integer requestedHours, LocalDateTime requestedEndTime) {
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+        if (!booking.getCustomerUser().getId().equals(userId)) {
+            throw new ForbiddenException("Unauthorized: Only booking customer can request an extension");
+        }
+        if (booking.getBookingStatus() != Booking.BookingStatus.CONFIRMED && booking.getBookingStatus() != Booking.BookingStatus.IN_PROGRESS) {
+            throw new BadRequestException("Only CONFIRMED or IN_PROGRESS bookings can be extended");
+        }
+
+        LocalDateTime newEndTime = requestedEndTime;
+        if (newEndTime == null && requestedHours != null) {
+            newEndTime = booking.getEndTime().plusHours(requestedHours);
+        }
+        if (newEndTime == null || !newEndTime.isAfter(booking.getEndTime())) {
+            throw new BadRequestException("Requested end time must be after current booking end time");
+        }
+
+        // Check availability
+        boolean available = vehicleService.isVehicleAvailable(booking.getVehicle().getId(), booking.getEndTime(), newEndTime, booking.getId(), null);
+        if (!available) {
+            throw new BadRequestException("Vehicle is not available for requested extension period");
+        }
+
+        VehiclePricingProfile pricing = pricingRepository.findByVehicleId(booking.getVehicle().getId())
+                .orElseThrow(() -> new BadRequestException("Vehicle pricing profile not configured"));
+
+        Duration extDuration = Duration.between(booking.getEndTime(), newEndTime);
+        long hours = extDuration.toHours();
+        if (extDuration.toMinutes() % 60 != 0) hours++;
+        BigDecimal extAmount = pricing.getHourlyRate().multiply(BigDecimal.valueOf(hours));
+
+        String demandRef = "DEM-EXT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        RentalPaymentDemand extDemand = RentalPaymentDemand.builder()
+                .demandReference(demandRef)
+                .managerPartner(booking.getManagerPartner())
+                .customerUser(booking.getCustomerUser())
+                .demandType(RentalPaymentDemand.DemandType.BOOKING_EXTENSION)
+                .amountDemanded(extAmount)
+                .totalVerifiedSubmitted(BigDecimal.ZERO)
+                .amountSatisfied(BigDecimal.ZERO)
+                .excessAmount(BigDecimal.ZERO)
+                .cancellationFeeRetained(BigDecimal.ZERO)
+                .currency("INR")
+                .status(RentalPaymentDemand.DemandStatus.OPEN)
+                .build();
+        extDemand = demandRepository.save(extDemand);
+
+        BookingExtension ext = BookingExtension.builder()
+                .booking(booking)
+                .previousEndTime(booking.getEndTime())
+                .requestedEndTime(newEndTime)
+                .extensionRentalAmount(extAmount)
+                .demand(extDemand)
+                .status(BookingExtension.ExtensionStatus.REQUESTED)
+                .build();
+        ext = extensionRepository.save(ext);
+
+        return BookingDto.ExtensionResponseDto.builder()
+                .id(ext.getId())
+                .bookingId(booking.getId())
+                .previousEndTime(ext.getPreviousEndTime())
+                .requestedEndTime(ext.getRequestedEndTime())
+                .extensionRentalAmount(ext.getExtensionRentalAmount())
+                .demandId(extDemand.getId())
+                .status(ext.getStatus().name())
                 .build();
     }
 

@@ -1,6 +1,7 @@
 package com.vehiclerental.modules.contributor.service;
 
 import com.vehiclerental.common.exception.BadRequestException;
+import com.vehiclerental.common.exception.ForbiddenException;
 import com.vehiclerental.common.exception.ResourceNotFoundException;
 import com.vehiclerental.modules.contributor.dto.ContributorDto;
 import com.vehiclerental.modules.contributor.entity.ContributionAgreement;
@@ -268,6 +269,62 @@ public class ContributorService {
         return agreementRepository.findByPartnerId(partner.getId()).stream()
                 .map(this::mapAgreementToDto)
                 .collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<ContributorDto.ContributorVehicleDto> getContributorVehicles(Long userId) {
+        ContributorProfile profile = contributorProfileRepository.findByUserId(userId).orElse(null);
+        if (profile == null) return List.of();
+        List<ContributionAgreement> agreements = agreementRepository.findByContributorId(profile.getId());
+        return agreements.stream()
+                .filter(ag -> ag.getVehicle() != null)
+                .map(ag -> {
+                    Vehicle v = ag.getVehicle();
+                    return ContributorDto.ContributorVehicleDto.builder()
+                            .id(v.getId())
+                            .make(v.getMake())
+                            .model(v.getModel())
+                            .plateNumber(v.getRegistrationNumber())
+                            .registrationNumber(v.getRegistrationNumber())
+                            .status(v.getListingStatus() != null ? v.getListingStatus().name() : "PUBLISHED")
+                            .partnerBusinessName(ag.getPartner() != null ? ag.getPartner().getBusinessName() : "")
+                            .partnerHubName(v.getAssignedHub() != null ? v.getAssignedHub().getName() : "Vijayawada Central Hub")
+                            .custodyState(v.getCurrentCustodyStatus() != null ? v.getCurrentCustodyStatus().name() : "PARTNER_CUSTODY")
+                            .build();
+                })
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public ContributorDto.AgreementDto requestWithdrawal(Long userId, Long agreementId, String reason) {
+        ContributionAgreement agreement = agreementRepository.findById(agreementId)
+                .orElseThrow(() -> new ResourceNotFoundException("Agreement not found"));
+        if (!agreement.getContributor().getUser().getId().equals(userId)) {
+            throw new ForbiddenException("Unauthorized to withdraw this agreement");
+        }
+        agreement.setStatus(ContributionAgreement.AgreementStatus.TERMINATED);
+        if (agreement.getVehicle() != null) {
+            agreement.getVehicle().setListingStatus(Vehicle.ListingStatus.UNLISTED);
+            vehicleRepository.save(agreement.getVehicle());
+        }
+        agreement = agreementRepository.save(agreement);
+        recordAgreementEvent(agreement, ContributionAgreementEvent.AgreementEventType.TERMINATED, agreement.getContributor().getUser(), reason);
+        return mapAgreementToDto(agreement);
+    }
+
+    @Transactional
+    public ContributorDto.ContributorApplicationDto rejectApplication(Long partnerUserId, Long applicationId, String reason) {
+        PartnerProfile partner = partnerProfileRepository.findByUserId(partnerUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Partner profile not found"));
+        ContributorVehicleApplication app = applicationRepository.findById(applicationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Application not found"));
+        if (!app.getTargetPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Unauthorized: target partner does not match");
+        }
+        app.setStatus(ContributorVehicleApplication.ApplicationStatus.REJECTED);
+        app.setRejectionReason(reason);
+        app = applicationRepository.save(app);
+        return mapApplicationToDto(app);
     }
 
     private void recordAgreementEvent(ContributionAgreement agreement, ContributionAgreementEvent.AgreementEventType type, User actor, String notes) {

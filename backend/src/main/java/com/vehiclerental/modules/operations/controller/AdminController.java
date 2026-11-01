@@ -41,7 +41,7 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success(adminService.getPlatformStats(), "Platform stats retrieved"));
     }
 
-    @GetMapping("/partners")
+    @GetMapping({"/partners", "/partners/applications"})
     public ResponseEntity<ApiResponse<List<PartnerDto.PartnerProfileDto>>> listPartners(
             @RequestParam(required = false) String status
     ) {
@@ -50,6 +50,28 @@ public class AdminController {
             verificationStatus = PartnerProfile.PartnerVerificationStatus.valueOf(status.toUpperCase());
         }
         return ResponseEntity.ok(ApiResponse.success(partnerService.listAllPartners(verificationStatus), "Partners retrieved"));
+    }
+
+    @PostMapping("/partners/{partnerId}/approve")
+    public ResponseEntity<ApiResponse<PartnerDto.PartnerProfileDto>> approvePartner(@PathVariable Long partnerId) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User admin = userRepository.findByEmail(email).orElseThrow();
+        PartnerDto.ReviewApplicationRequest req = new PartnerDto.ReviewApplicationRequest(true, null);
+        PartnerDto.PartnerProfileDto resp = partnerService.reviewApplication(partnerId, admin.getId(), req);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Partner approved successfully"));
+    }
+
+    @PostMapping("/partners/{partnerId}/reject")
+    public ResponseEntity<ApiResponse<PartnerDto.PartnerProfileDto>> rejectPartner(
+            @PathVariable Long partnerId,
+            @RequestBody(required = false) java.util.Map<String, String> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User admin = userRepository.findByEmail(email).orElseThrow();
+        String reason = body != null ? body.getOrDefault("reason", "Application rejected by admin") : "Application rejected by admin";
+        PartnerDto.ReviewApplicationRequest req = new PartnerDto.ReviewApplicationRequest(false, reason);
+        PartnerDto.PartnerProfileDto resp = partnerService.reviewApplication(partnerId, admin.getId(), req);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Partner rejected"));
     }
 
     @PostMapping("/partners/{partnerId}/review")
@@ -73,25 +95,37 @@ public class AdminController {
         return ResponseEntity.ok(ApiResponse.success(PagedResponse.from(result), "All tickets retrieved"));
     }
 
-    @PostMapping("/refunds/{refundId}/arbitrate")
+    @GetMapping("/disputes/refunds")
+    public ResponseEntity<ApiResponse<List<com.vehiclerental.modules.payment.dto.PaymentDto.RentalFeeRefundDto>>> getRefundDisputes() {
+        return ResponseEntity.ok(ApiResponse.success(adminService.getDisputedRefunds(), "Refund disputes retrieved"));
+    }
+
+    @PostMapping({"/disputes/refunds/{refundId}/resolve", "/refunds/{refundId}/arbitrate"})
     public ResponseEntity<ApiResponse<Void>> arbitrateRefund(
             @PathVariable Long refundId,
-            @Valid @RequestBody OperationsDto.ResolveDisputeRequest request
+            @RequestBody(required = false) OperationsDto.ResolveDisputeRequest request
     ) {
         String email = SecurityUtils.getCurrentUserEmail();
         User admin = userRepository.findByEmail(email).orElseThrow();
-        adminService.arbitrateRefundDispute(admin.getId(), refundId, request);
+        OperationsDto.ResolveDisputeRequest req = request != null ? request : new OperationsDto.ResolveDisputeRequest("Refund dispute resolved by Admin", null);
+        adminService.arbitrateRefundDispute(admin.getId(), refundId, req);
         return ResponseEntity.ok(ApiResponse.success(null, "Refund dispute arbitrated"));
     }
 
-    @PostMapping("/deductions/{deductionId}/arbitrate")
+    @GetMapping("/disputes/deposits")
+    public ResponseEntity<ApiResponse<List<OperationsDto.DisputedDepositDto>>> getDepositDisputes() {
+        return ResponseEntity.ok(ApiResponse.success(adminService.getDisputedDeposits(), "Deposit disputes retrieved"));
+    }
+
+    @PostMapping({"/disputes/deposits/{deductionId}/resolve", "/deductions/{deductionId}/arbitrate"})
     public ResponseEntity<ApiResponse<Void>> arbitrateDeduction(
             @PathVariable Long deductionId,
-            @Valid @RequestBody OperationsDto.ResolveDisputeRequest request
+            @RequestBody(required = false) OperationsDto.ResolveDisputeRequest request
     ) {
         String email = SecurityUtils.getCurrentUserEmail();
         User admin = userRepository.findByEmail(email).orElseThrow();
-        adminService.arbitrateDepositDeduction(admin.getId(), deductionId, request);
+        OperationsDto.ResolveDisputeRequest req = request != null ? request : new OperationsDto.ResolveDisputeRequest("Deposit deduction arbitrated by Admin", null);
+        adminService.arbitrateDepositDeduction(admin.getId(), deductionId, req);
         return ResponseEntity.ok(ApiResponse.success(null, "Deposit deduction arbitrated"));
     }
 

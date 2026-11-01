@@ -134,7 +134,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <argLine>-XX:+EnableDynamicAgentLoading -Xshare:off</argLine>
+                    <argLine>-XX:+EnableDynamicAgentLoading -Xshare:off -Xmx256m -Djava.io.tmpdir=D:\temp</argLine>
                     <includes>
                         <include>**/*Test.java</include>
                         <include>**/*Tests.java</include>

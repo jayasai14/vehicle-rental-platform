@@ -1,0 +1,20 @@
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+  jpa:
+    show-sql: false
+
+jwt:
+  secret: ${JWT_SECRET}
+
+app:
+  seed:
+    enabled: false
+  storage:
+    type: ${STORAGE_TYPE:s3}
+    local-path: ${STORAGE_LOCAL_PATH:/var/data/uploads}

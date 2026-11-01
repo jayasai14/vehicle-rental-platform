@@ -36,6 +36,9 @@ public class AuthService {
 
     @Transactional
     public AuthDto.AuthResponse register(AuthDto.RegisterRequest request) {
+        if (request.getPassword() == null || request.getPassword().length() < 6) {
+            throw new BadRequestException("Password must be at least 6 characters");
+        }
         if (userRepository.existsByEmail(request.getEmail())) {
             throw new BadRequestException("Email is already registered");
         }
@@ -43,32 +46,25 @@ public class AuthService {
             throw new BadRequestException("Phone number is already registered");
         }
 
+        if (request.getRole() != null && !request.getRole().isBlank()) {
+            String roleName = request.getRole().toUpperCase().trim();
+            if (roleName.contains("ADMIN")) {
+                throw new BadRequestException("Registration as ADMIN is not permitted");
+            }
+        }
+
         User user = new User();
-        user.setFullName(request.getFullName());
+        user.setFullName(request.getFullName().trim());
         user.setEmail(request.getEmail().toLowerCase().trim());
         user.setPhoneNumber(request.getPhoneNumber().trim());
         user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
         user.setActive(true);
 
         Set<Role> roles = new HashSet<>();
-        // Assign default customer role
+        // All public registrations receive default ROLE_CUSTOMER
         Role customerRole = roleRepository.findByName("ROLE_CUSTOMER")
                 .orElseGet(() -> roleRepository.save(new Role("ROLE_CUSTOMER", "Customer role")));
         roles.add(customerRole);
-
-        // Optional role requested
-        if (request.getRole() != null && !request.getRole().isBlank()) {
-            String roleName = request.getRole().toUpperCase().trim();
-            if (!roleName.startsWith("ROLE_")) {
-                roleName = "ROLE_" + roleName;
-            }
-            if ("ROLE_RENTAL_PARTNER".equals(roleName) || "ROLE_VEHICLE_CONTRIBUTOR".equals(roleName)) {
-                String finalRoleName = roleName;
-                Role extraRole = roleRepository.findByName(roleName)
-                        .orElseGet(() -> roleRepository.save(new Role(finalRoleName, "Self-registered role")));
-                roles.add(extraRole);
-            }
-        }
         user.setRoles(roles);
         User savedUser = userRepository.save(user);
 
@@ -98,13 +94,27 @@ public class AuthService {
 
     @Transactional
     public AuthDto.AuthResponse refreshToken(String oldRefreshToken) {
-        RefreshToken token = refreshTokenRepository.findByTokenHash(oldRefreshToken)
+        if (oldRefreshToken == null || oldRefreshToken.isBlank()) {
+            throw new UnauthorizedException("Refresh token is required");
+        }
+
+        String hashed = hashToken(oldRefreshToken);
+        RefreshToken token = refreshTokenRepository.findByTokenHash(hashed)
+                .or(() -> refreshTokenRepository.findByTokenHash(oldRefreshToken))
                 .orElseThrow(() -> new UnauthorizedException("Invalid refresh token"));
 
-        if (token.isRevoked() || token.getExpiresAt().isBefore(LocalDateTime.now())) {
+        if (token.isRevoked()) {
+            // Revoked token reuse detected - immediately revoke entire family for security
+            if (token.getFamilyId() != null) {
+                refreshTokenRepository.revokeAllByFamilyId(token.getFamilyId());
+            }
+            throw new UnauthorizedException("Revoked refresh token reuse detected. Token family invalidated.");
+        }
+
+        if (token.getExpiresAt().isBefore(LocalDateTime.now())) {
             token.setRevoked(true);
             refreshTokenRepository.save(token);
-            throw new UnauthorizedException("Refresh token is expired or revoked");
+            throw new UnauthorizedException("Refresh token is expired");
         }
 
         User user = token.getUser();
@@ -112,15 +122,19 @@ public class AuthService {
         token.setRevoked(true);
         refreshTokenRepository.save(token);
 
-        return createAuthResponse(user);
+        return createAuthResponse(user, token.getFamilyId());
     }
 
     @Transactional
     public void logout(String refreshToken) {
-        refreshTokenRepository.findByTokenHash(refreshToken).ifPresent(token -> {
-            token.setRevoked(true);
-            refreshTokenRepository.save(token);
-        });
+        if (refreshToken == null || refreshToken.isBlank()) return;
+        String hashed = hashToken(refreshToken);
+        refreshTokenRepository.findByTokenHash(hashed)
+                .or(() -> refreshTokenRepository.findByTokenHash(refreshToken))
+                .ifPresent(token -> {
+                    token.setRevoked(true);
+                    refreshTokenRepository.save(token);
+                });
     }
 
     @Transactional(readOnly = true)
@@ -160,20 +174,51 @@ public class AuthService {
     }
 
     @Transactional
+    public AuthDto.UserProfileDto updateProfile(Long userId, AuthDto.UpdateProfileRequest request) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + userId));
+
+        if (request.getFullName() != null && !request.getFullName().isBlank()) {
+            user.setFullName(request.getFullName().trim());
+        }
+        if (request.getPhoneNumber() != null && !request.getPhoneNumber().isBlank()) {
+            String newPhone = request.getPhoneNumber().trim();
+            if (!newPhone.equals(user.getPhoneNumber()) && userRepository.existsByPhoneNumber(newPhone)) {
+                throw new BadRequestException("Phone number is already registered to another user");
+            }
+            user.setPhoneNumber(newPhone);
+        }
+        userRepository.save(user);
+
+        if (request.getPreferredLanguage() != null && !request.getPreferredLanguage().isBlank()) {
+            CustomerProfile customerProfile = customerProfileRepository.findByUserId(userId).orElseGet(() -> {
+                CustomerProfile cp = new CustomerProfile();
+                cp.setUser(user);
+                return cp;
+            });
+            customerProfile.setPreferredLanguage(request.getPreferredLanguage().trim());
+            customerProfileRepository.save(customerProfile);
+        }
+
+        return getProfile(userId);
+    }
+
+    @Transactional
     public AuthDto.DrivingLicenceDto submitDrivingLicence(Long userId, AuthDto.DrivingLicenceSubmitRequest request) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
         DrivingLicence dl = drivingLicenceRepository.findByUserId(userId).orElseGet(DrivingLicence::new);
         dl.setUser(user);
-        dl.setLicenceNumber(request.getLicenceNumber());
-        dl.setIssuingRto(request.getIssuingRto());
+        dl.setLicenceNumber(request.getLicenceNumber().trim());
+        dl.setIssuingRto(request.getIssuingRto().trim());
         dl.setValidFrom(request.getValidFrom() != null ? request.getValidFrom() : java.time.LocalDate.now());
-        dl.setValidUntil(request.getValidUntil() != null ? request.getValidUntil() : java.time.LocalDate.now().plusYears(10));
+        dl.setValidUntil(request.getValidUntil());
         dl.setVehicleClassesAuthorized(request.getVehicleClassesAuthorized() != null ? request.getVehicleClassesAuthorized() : "LMV, MCWG");
         dl.setStorageObjectKey(request.getStorageObjectKey() != null ? request.getStorageObjectKey() : "default_dl.pdf");
-        dl.setVerificationStatus(DrivingLicence.VerificationStatus.VERIFIED); // In MVP, automatically mark verified on customer upload or manual admin
-        dl.setVerifiedAt(LocalDateTime.now());
+        // Customer uploaded DL begins in PENDING until reviewed by Admin
+        dl.setVerificationStatus(DrivingLicence.VerificationStatus.PENDING);
+        dl.setVerifiedAt(null);
         drivingLicenceRepository.save(dl);
 
         return AuthDto.DrivingLicenceDto.builder()
@@ -187,26 +232,87 @@ public class AuthService {
     }
 
     private AuthDto.AuthResponse createAuthResponse(User user) {
+        return createAuthResponse(user, null);
+    }
+
+    private AuthDto.AuthResponse createAuthResponse(User user, String familyId) {
         Set<String> roleNames = user.getRoles().stream().map(Role::getName).collect(Collectors.toSet());
         String accessToken = jwtTokenProvider.generateToken(user.getId(), user.getEmail(), roleNames);
 
-        // Generate Refresh Token
-        String tokenString = UUID.randomUUID().toString();
+        // Generate cryptographically random Refresh Token and hash it
+        String rawTokenString = UUID.randomUUID().toString();
+        String tokenHash = hashToken(rawTokenString);
+        String famId = (familyId != null && !familyId.isBlank()) ? familyId : UUID.randomUUID().toString().replace("-", "");
+
         RefreshToken refreshToken = new RefreshToken();
         refreshToken.setUser(user);
-        refreshToken.setToken(tokenString);
+        refreshToken.setTokenHash(tokenHash);
+        refreshToken.setFamilyId(famId);
         refreshToken.setExpiresAt(LocalDateTime.now().plusDays(refreshTokenExpirationDays));
         refreshToken.setRevoked(false);
         refreshTokenRepository.save(refreshToken);
 
+        // Also build normalized UserProfileDto directly from in-memory user
+        AuthDto.UserProfileDto profileDto = buildUserProfileDto(user);
+
         return AuthDto.AuthResponse.builder()
                 .accessToken(accessToken)
-                .refreshToken(tokenString)
+                .refreshToken(rawTokenString)
                 .userId(user.getId())
                 .fullName(user.getFullName())
                 .email(user.getEmail())
                 .phoneNumber(user.getPhoneNumber())
                 .roles(roleNames)
+                .user(profileDto)
                 .build();
+    }
+
+    private AuthDto.UserProfileDto buildUserProfileDto(User user) {
+        CustomerProfile customerProfile = customerProfileRepository.findByUserId(user.getId()).orElse(null);
+        DrivingLicence dl = drivingLicenceRepository.findByUserId(user.getId()).orElse(null);
+        Set<String> roleNames = user.getRoles() != null
+                ? user.getRoles().stream().map(Role::getName).collect(Collectors.toSet())
+                : Set.of();
+
+        return AuthDto.UserProfileDto.builder()
+                .id(user.getId())
+                .fullName(user.getFullName())
+                .email(user.getEmail())
+                .phoneNumber(user.getPhoneNumber())
+                .roles(roleNames)
+                .emailVerified(user.isEmailVerified())
+                .phoneVerified(user.isPhoneVerified())
+                .active(user.isActive())
+                .customerProfile(customerProfile != null ? AuthDto.CustomerProfileDto.builder()
+                        .preferredLanguage(customerProfile.getPreferredLanguage())
+                        .totalCompletedTrips(customerProfile.getTotalCompletedTrips())
+                        .suspended(customerProfile.isSuspended())
+                        .build() : null)
+                .drivingLicence(dl != null ? AuthDto.DrivingLicenceDto.builder()
+                        .licenceNumber(dl.getLicenceNumber())
+                        .issuingRto(dl.getIssuingRto())
+                        .validFrom(dl.getValidFrom())
+                        .validUntil(dl.getValidUntil())
+                        .vehicleClassesAuthorized(dl.getVehicleClassesAuthorized())
+                        .verificationStatus(dl.getVerificationStatus().name())
+                        .rejectionReason(dl.getRejectionReason())
+                        .build() : null)
+                .build();
+    }
+
+    private String hashToken(String token) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 algorithm unavailable", e);
+        }
     }
 }

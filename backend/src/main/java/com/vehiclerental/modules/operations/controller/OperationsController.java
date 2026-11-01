@@ -27,7 +27,7 @@ public class OperationsController {
     private final NotificationService notificationService;
     private final UserRepository userRepository;
 
-    @PostMapping("/support/tickets")
+    @PostMapping({"/support/tickets", "/operations/tickets"})
     public ResponseEntity<ApiResponse<OperationsDto.TicketDto>> createTicket(
             @Valid @RequestBody OperationsDto.CreateTicketRequest request
     ) {
@@ -37,7 +37,7 @@ public class OperationsController {
         return ResponseEntity.ok(ApiResponse.success(ticket, "Support ticket opened successfully"));
     }
 
-    @GetMapping("/support/tickets")
+    @GetMapping({"/support/tickets", "/operations/tickets"})
     public ResponseEntity<ApiResponse<PagedResponse<OperationsDto.TicketDto>>> getUserTickets(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "10") int size
@@ -49,12 +49,15 @@ public class OperationsController {
         return ResponseEntity.ok(ApiResponse.success(PagedResponse.from(result), "Tickets retrieved"));
     }
 
-    @GetMapping("/support/tickets/{id}")
+    @GetMapping({"/support/tickets/{id}", "/operations/tickets/{id}"})
     public ResponseEntity<ApiResponse<OperationsDto.TicketDto>> getTicket(@PathVariable Long id) {
-        return ResponseEntity.ok(ApiResponse.success(ticketService.getTicketById(id), "Ticket retrieved"));
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElse(null);
+        Long userId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(ApiResponse.success(ticketService.getTicketById(userId, id), "Ticket retrieved"));
     }
 
-    @PostMapping("/support/tickets/{id}/messages")
+    @PostMapping({"/support/tickets/{id}/messages", "/operations/tickets/{id}/messages"})
     public ResponseEntity<ApiResponse<OperationsDto.TicketMessageDto>> sendMessage(
             @PathVariable Long id,
             @Valid @RequestBody OperationsDto.SendMessageRequest request
@@ -65,17 +68,29 @@ public class OperationsController {
         return ResponseEntity.ok(ApiResponse.success(msg, "Message sent"));
     }
 
-    @PostMapping("/reviews")
+    @GetMapping({"/support/tickets/{id}/messages", "/operations/tickets/{id}/messages"})
+    public ResponseEntity<ApiResponse<java.util.List<OperationsDto.TicketMessageDto>>> getTicketMessages(@PathVariable Long id) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElse(null);
+        Long userId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(ApiResponse.success(ticketService.getTicketMessages(userId, id), "Messages retrieved"));
+    }
+
+    @PostMapping({"/reviews", "/operations/reviews/booking/{bookingId}"})
     public ResponseEntity<ApiResponse<OperationsDto.ReviewDto>> submitReview(
+            @PathVariable(required = false) Long bookingId,
             @Valid @RequestBody OperationsDto.CreateReviewRequest request
     ) {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
+        if (bookingId != null && request.getBookingId() == null) {
+            request.setBookingId(bookingId);
+        }
         OperationsDto.ReviewDto review = reviewService.createReview(user.getId(), request);
         return ResponseEntity.ok(ApiResponse.success(review, "Review submitted successfully"));
     }
 
-    @GetMapping("/reviews/vehicle/{vehicleId}")
+    @GetMapping({"/reviews/vehicle/{vehicleId}", "/operations/reviews/vehicle/{vehicleId}"})
     public ResponseEntity<ApiResponse<PagedResponse<OperationsDto.ReviewDto>>> getVehicleReviews(
             @PathVariable Long vehicleId,
             @RequestParam(defaultValue = "0") int page,
@@ -86,7 +101,7 @@ public class OperationsController {
         return ResponseEntity.ok(ApiResponse.success(PagedResponse.from(result), "Reviews retrieved"));
     }
 
-    @GetMapping("/notifications")
+    @GetMapping({"/notifications", "/operations/notifications"})
     public ResponseEntity<ApiResponse<PagedResponse<OperationsDto.NotificationDto>>> getNotifications(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size
@@ -98,7 +113,7 @@ public class OperationsController {
         return ResponseEntity.ok(ApiResponse.success(PagedResponse.from(result), "Notifications retrieved"));
     }
 
-    @PostMapping("/notifications/{id}/read")
+    @RequestMapping(value = {"/notifications/{id}/read", "/operations/notifications/{id}/read"}, method = {RequestMethod.POST, RequestMethod.PATCH})
     public ResponseEntity<ApiResponse<Void>> markNotificationRead(@PathVariable Long id) {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();

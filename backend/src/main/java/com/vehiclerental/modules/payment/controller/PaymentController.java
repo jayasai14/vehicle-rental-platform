@@ -69,12 +69,18 @@ public class PaymentController {
 
     @GetMapping("/payments/demands/hold/{holdId}")
     public ResponseEntity<ApiResponse<PaymentDto.PaymentDemandDto>> getDemandByHold(@PathVariable Long holdId) {
-        return ResponseEntity.ok(ApiResponse.success(paymentService.getDemandByHoldId(holdId), "Payment demand retrieved"));
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElse(null);
+        Long userId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(ApiResponse.success(paymentService.getDemandByHoldId(userId, holdId), "Payment demand retrieved"));
     }
 
     @GetMapping("/payments/demands/{demandId}")
     public ResponseEntity<ApiResponse<PaymentDto.PaymentDemandDto>> getDemandById(@PathVariable Long demandId) {
-        return ResponseEntity.ok(ApiResponse.success(paymentService.getDemandById(demandId), "Payment demand retrieved"));
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElse(null);
+        Long userId = user != null ? user.getId() : null;
+        return ResponseEntity.ok(ApiResponse.success(paymentService.getDemandById(userId, demandId), "Payment demand retrieved"));
     }
 
     @PostMapping("/payments/reapply")
@@ -92,7 +98,7 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.success(paymentService.calculateAvailableRefundableBalance(demandId), "Available balance calculated"));
     }
 
-    @GetMapping("/refunds/customer")
+    @GetMapping({"/refunds/customer", "/payments/refunds/my"})
     public ResponseEntity<ApiResponse<List<PaymentDto.RentalFeeRefundDto>>> getCustomerRefunds() {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
@@ -119,7 +125,7 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.success(resp, "Refund disbursement recorded"));
     }
 
-    @PostMapping("/customer/refunds/{refundId}/respond")
+    @PostMapping({"/customer/refunds/{refundId}/respond", "/payments/refunds/{refundId}/respond"})
     public ResponseEntity<ApiResponse<PaymentDto.RentalFeeRefundDto>> customerRespondToRefund(
             @PathVariable Long refundId,
             @Valid @RequestBody PaymentDto.CustomerRefundActionRequest request
@@ -128,6 +134,50 @@ public class PaymentController {
         User user = userRepository.findByEmail(email).orElseThrow();
         PaymentDto.RentalFeeRefundDto resp = paymentService.customerRespondToRefund(user.getId(), refundId, request);
         return ResponseEntity.ok(ApiResponse.success(resp, request.isAcknowledged() ? "Refund acknowledged" : "Refund dispute opened"));
+    }
+
+    @PostMapping({"/payments/refunds/{refundId}/acknowledge", "/customer/refunds/{refundId}/acknowledge"})
+    public ResponseEntity<ApiResponse<PaymentDto.RentalFeeRefundDto>> customerAcknowledgeRefund(@PathVariable Long refundId) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        PaymentDto.CustomerRefundActionRequest req = new PaymentDto.CustomerRefundActionRequest(true, null);
+        PaymentDto.RentalFeeRefundDto resp = paymentService.customerRespondToRefund(user.getId(), refundId, req);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Refund acknowledged"));
+    }
+
+    @PostMapping({"/payments/refunds/{refundId}/dispute", "/customer/refunds/{refundId}/dispute"})
+    public ResponseEntity<ApiResponse<PaymentDto.RentalFeeRefundDto>> customerDisputeRefund(
+            @PathVariable Long refundId,
+            @RequestBody(required = false) java.util.Map<String, String> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String reason = body != null ? body.getOrDefault("disputeReason", "Customer disputed refund disbursement") : "Customer disputed refund disbursement";
+        PaymentDto.CustomerRefundActionRequest req = new PaymentDto.CustomerRefundActionRequest(false, reason);
+        PaymentDto.RentalFeeRefundDto resp = paymentService.customerRespondToRefund(user.getId(), refundId, req);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Refund dispute opened"));
+    }
+
+    @PostMapping({"/customer/deposits/{depositRefundId}/acknowledge", "/payments/deposits/{depositRefundId}/acknowledge"})
+    public ResponseEntity<ApiResponse<PaymentDto.SecurityDepositDto>> customerAcknowledgeDepositRefund(@PathVariable Long depositRefundId) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        PaymentDto.CustomerRefundActionRequest req = new PaymentDto.CustomerRefundActionRequest(true, null);
+        PaymentDto.SecurityDepositDto resp = paymentService.customerRespondToDepositRefund(user.getId(), depositRefundId, req);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Deposit refund acknowledged"));
+    }
+
+    @PostMapping({"/customer/deposits/{depositRefundId}/dispute", "/payments/deposits/{depositRefundId}/dispute"})
+    public ResponseEntity<ApiResponse<PaymentDto.SecurityDepositDto>> customerDisputeDepositRefund(
+            @PathVariable Long depositRefundId,
+            @RequestBody(required = false) java.util.Map<String, String> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String reason = body != null ? body.getOrDefault("disputeReason", "Customer disputed deposit deduction/refund") : "Customer disputed deposit deduction/refund";
+        PaymentDto.CustomerRefundActionRequest req = new PaymentDto.CustomerRefundActionRequest(false, reason);
+        PaymentDto.SecurityDepositDto resp = paymentService.customerRespondToDepositRefund(user.getId(), depositRefundId, req);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Deposit refund dispute opened"));
     }
 
     @PostMapping("/partners/deposits/{bookingId}/collect")
@@ -167,7 +217,7 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.success(resp, "Deposit refund recorded"));
     }
 
-    @GetMapping("/contributor/payables")
+    @GetMapping({"/contributor/payables", "/contributors/payables"})
     public ResponseEntity<ApiResponse<List<PaymentDto.ContributorPayableDto>>> getContributorPayables() {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
@@ -194,15 +244,45 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.success(resp, "Contributor settlement recorded"));
     }
 
-    @PostMapping("/contributor/payables/{payableId}/respond")
+    @PostMapping({"/contributor/payables/{payableId}/respond", "/contributors/payables/{payableId}/respond"})
     public ResponseEntity<ApiResponse<PaymentDto.ContributorPayableDto>> respondToSettlement(
             @PathVariable Long payableId,
-            @RequestParam boolean acknowledged,
-            @RequestParam(required = false) String disputeReason
+            @RequestParam(required = false) Boolean acknowledged,
+            @RequestBody(required = false) java.util.Map<String, Object> body
     ) {
         String email = SecurityUtils.getCurrentUserEmail();
         User user = userRepository.findByEmail(email).orElseThrow();
-        PaymentDto.ContributorPayableDto resp = paymentService.contributorRespondToSettlement(user.getId(), payableId, acknowledged, disputeReason);
-        return ResponseEntity.ok(ApiResponse.success(resp, acknowledged ? "Settlement confirmed" : "Settlement disputed"));
+        boolean ack = true;
+        String reason = null;
+        if (acknowledged != null) {
+            ack = acknowledged;
+        } else if (body != null && body.get("acknowledged") != null) {
+            ack = Boolean.parseBoolean(body.get("acknowledged").toString());
+        }
+        if (body != null) {
+            reason = (String) body.get("disputeReason");
+        }
+        PaymentDto.ContributorPayableDto resp = paymentService.contributorRespondToSettlement(user.getId(), payableId, ack, reason);
+        return ResponseEntity.ok(ApiResponse.success(resp, ack ? "Settlement confirmed" : "Settlement disputed"));
+    }
+
+    @PostMapping({"/contributors/payables/{payableId}/confirm", "/contributor/payables/{payableId}/confirm"})
+    public ResponseEntity<ApiResponse<PaymentDto.ContributorPayableDto>> confirmSettlement(@PathVariable Long payableId) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        PaymentDto.ContributorPayableDto resp = paymentService.contributorRespondToSettlement(user.getId(), payableId, true, null);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Settlement confirmed"));
+    }
+
+    @PostMapping({"/contributors/payables/{payableId}/dispute", "/contributor/payables/{payableId}/dispute"})
+    public ResponseEntity<ApiResponse<PaymentDto.ContributorPayableDto>> disputeSettlement(
+            @PathVariable Long payableId,
+            @RequestBody(required = false) java.util.Map<String, String> body
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String reason = body != null ? body.getOrDefault("disputeReason", "Contributor disputed settlement amount") : "Contributor disputed settlement amount";
+        PaymentDto.ContributorPayableDto resp = paymentService.contributorRespondToSettlement(user.getId(), payableId, false, reason);
+        return ResponseEntity.ok(ApiResponse.success(resp, "Settlement disputed"));
     }
 }

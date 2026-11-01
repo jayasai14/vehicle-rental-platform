@@ -42,10 +42,14 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import java.util.Set;
 
 @Slf4j
 @Component
+@Profile("!prod")
+@ConditionalOnProperty(name = "app.seed.enabled", havingValue = "true", matchIfMissing = true)
 @RequiredArgsConstructor
 public class DataSeeder implements CommandLineRunner {
 

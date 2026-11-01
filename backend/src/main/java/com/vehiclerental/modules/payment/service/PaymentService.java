@@ -1,6 +1,7 @@
 package com.vehiclerental.modules.payment.service;
 
 import com.vehiclerental.common.exception.BadRequestException;
+import com.vehiclerental.common.exception.ForbiddenException;
 import com.vehiclerental.common.exception.ResourceNotFoundException;
 import com.vehiclerental.modules.booking.entity.Booking;
 import com.vehiclerental.modules.booking.entity.BookingHold;
@@ -46,6 +47,8 @@ public class PaymentService {
     private final UserRepository userRepository;
     private final SupportTicketRepository supportTicketRepository;
     private final BookingService bookingService;
+    private final com.vehiclerental.modules.partner.service.PartnerService partnerService;
+    private final com.vehiclerental.modules.vehicle.service.VehicleService vehicleService;
 
     // ------------------------------------------------------------------------
     // PAYMENT SUBMISSION & VERIFICATION (PARTNER-DIRECT)
@@ -53,6 +56,10 @@ public class PaymentService {
 
     @Transactional
     public PaymentDto.PaymentSubmissionDto submitPayment(Long customerUserId, PaymentDto.PaymentSubmissionRequest request) {
+        if (request.getAmountSubmitted() == null || request.getAmountSubmitted().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BadRequestException("Payment amount submitted must be greater than zero");
+        }
+
         User customer = userRepository.findById(customerUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("Customer not found"));
 
@@ -119,11 +126,12 @@ public class PaymentService {
             Long submissionId,
             PaymentDto.VerifySubmissionRequest request
     ) {
+        PartnerProfile partner = partnerService.validateVerifiedPartner(partnerUserId);
         RentalPaymentSubmission submission = submissionRepository.findById(submissionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Submission not found"));
 
-        if (!submission.getManagerPartner().getUser().getId().equals(partnerUserId)) {
-            throw new BadRequestException("Only the managing partner can verify this submission");
+        if (!submission.getManagerPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Only the managing partner can verify this submission");
         }
 
         if (submission.getSubmissionStatus() != RentalPaymentSubmission.SubmissionStatus.SUBMITTED_FOR_VERIFICATION) {
@@ -214,6 +222,12 @@ public class PaymentService {
 
         if (newHold.getStatus() != BookingHold.HoldStatus.ACTIVE) {
             throw new BadRequestException("New hold is not active");
+        }
+
+        // Revalidate availability under lock
+        boolean available = vehicleService.isVehicleAvailable(newHold.getVehicle().getId(), newHold.getStartTime(), newHold.getEndTime(), null, newHold.getId());
+        if (!available) {
+            throw new BadRequestException("Vehicle is no longer available for the requested new hold period");
         }
 
         RentalPaymentDemand newDemand = demandRepository.findByHoldId(newHold.getId())
@@ -365,11 +379,19 @@ public class PaymentService {
             Long bookingId,
             PaymentDto.RecordDepositCollectionRequest request
     ) {
+        PartnerProfile partner = partnerService.validateVerifiedPartner(partnerUserId);
         SecurityDeposit deposit = depositRepository.findByBookingId(bookingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Deposit not found for booking: " + bookingId));
 
-        if (!deposit.getManagerPartner().getUser().getId().equals(partnerUserId)) {
-            throw new BadRequestException("Unauthorized: Only managing partner can record deposit collection");
+        if (!deposit.getManagerPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Unauthorized: Only managing partner can record deposit collection");
+        }
+
+        if (request.getCollectedAmount() == null || request.getCollectedAmount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BadRequestException("Collected deposit amount must be greater than zero");
+        }
+        if (request.getCollectedAmount().compareTo(deposit.getRequiredAmount()) > 0) {
+            throw new BadRequestException("Collected amount (" + request.getCollectedAmount() + ") cannot exceed required deposit amount (" + deposit.getRequiredAmount() + ")");
         }
 
         deposit.setCollectedAmount(request.getCollectedAmount());
@@ -413,11 +435,16 @@ public class PaymentService {
             String refundMethod,
             String utr
     ) {
+        PartnerProfile partner = partnerService.validateVerifiedPartner(partnerUserId);
         SecurityDeposit deposit = depositRepository.findById(depositId)
                 .orElseThrow(() -> new ResourceNotFoundException("Deposit not found"));
 
-        if (!deposit.getManagerPartner().getUser().getId().equals(partnerUserId)) {
-            throw new BadRequestException("Unauthorized partner");
+        if (!deposit.getManagerPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Unauthorized: Only managing partner can record deposit refund");
+        }
+
+        if (refundAmount == null || refundAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BadRequestException("Refund amount must be greater than zero");
         }
 
         BigDecimal cumulativeRefunds = depositRefundRepository.getCumulativeUnvoidedRefundAmountForDeposit(depositId);
@@ -447,6 +474,49 @@ public class PaymentService {
         deposit = depositRepository.save(deposit);
 
         return mapDepositToDto(deposit);
+    }
+
+    @Transactional
+    public PaymentDto.SecurityDepositDto customerRespondToDepositRefund(
+            Long customerUserId,
+            Long depositRefundId,
+            PaymentDto.CustomerRefundActionRequest request
+    ) {
+        SecurityDepositRefund refund = depositRefundRepository.findById(depositRefundId)
+                .orElseThrow(() -> new ResourceNotFoundException("Deposit refund not found"));
+
+        if (!refund.getCustomerUser().getId().equals(customerUserId)) {
+            throw new ForbiddenException("Unauthorized access to this deposit refund");
+        }
+
+        if (refund.getRefundStatus() != SecurityDepositRefund.RefundStatus.DISBURSED_BY_PARTNER) {
+            throw new BadRequestException("Deposit refund can only be responded to when disbursed by partner");
+        }
+
+        if (request.isAcknowledged()) {
+            refund.setRefundStatus(SecurityDepositRefund.RefundStatus.CUSTOMER_ACKNOWLEDGED);
+            refund.setAcknowledgedAt(LocalDateTime.now());
+        } else {
+            refund.setRefundStatus(SecurityDepositRefund.RefundStatus.DISPUTED_BY_CUSTOMER);
+            refund.setDisputeReason(request.getDisputeReason());
+            refund.setDisputeOpenedAt(LocalDateTime.now());
+
+            String ticketRef = "TCK-DEP-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+            SupportTicket ticket = SupportTicket.builder()
+                    .ticketReference(ticketRef)
+                    .user(refund.getCustomerUser())
+                    .booking(refund.getDeposit().getBooking())
+                    .subject("Disputed Security Deposit Refund #" + refund.getId())
+                    .category(SupportTicket.TicketCategory.REFUND_DISPUTE)
+                    .status(SupportTicket.TicketStatus.OPEN)
+                    .priority(SupportTicket.TicketPriority.HIGH)
+                    .build();
+            ticket = supportTicketRepository.save(ticket);
+            refund.setDisputeTicket(ticket);
+        }
+
+        depositRefundRepository.save(refund);
+        return mapDepositToDto(refund.getDeposit());
     }
 
     // ------------------------------------------------------------------------
@@ -545,26 +615,55 @@ public class PaymentService {
     }
 
     @Transactional(readOnly = true)
-    public PaymentDto.PaymentDemandDto getDemandByHoldId(Long holdId) {
+    public PaymentDto.PaymentDemandDto getDemandByHoldId(Long userId, Long holdId) {
         RentalPaymentDemand demand = demandRepository.findByHoldId(holdId)
                 .orElseThrow(() -> new ResourceNotFoundException("Demand not found for hold: " + holdId));
+        if (userId != null) {
+            User user = userRepository.findById(userId).orElseThrow();
+            boolean isAdmin = user.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+            boolean isCustomer = demand.getCustomerUser().getId().equals(userId);
+            boolean isPartner = demand.getManagerPartner() != null && demand.getManagerPartner().getUser().getId().equals(userId);
+            if (!isAdmin && !isCustomer && !isPartner) {
+                throw new ForbiddenException("Unauthorized access to this payment demand");
+            }
+        }
+        return mapDemandToDto(demand);
+    }
+
+    @Transactional(readOnly = true)
+    public PaymentDto.PaymentDemandDto getDemandByHoldId(Long holdId) {
+        return getDemandByHoldId(null, holdId);
+    }
+
+    @Transactional(readOnly = true)
+    public PaymentDto.PaymentDemandDto getDemandById(Long userId, Long demandId) {
+        RentalPaymentDemand demand = demandRepository.findById(demandId)
+                .orElseThrow(() -> new ResourceNotFoundException("Demand not found with id: " + demandId));
+        if (userId != null) {
+            User user = userRepository.findById(userId).orElseThrow();
+            boolean isAdmin = user.getRoles().stream().anyMatch(r -> "ROLE_ADMIN".equals(r.getName()));
+            boolean isCustomer = demand.getCustomerUser().getId().equals(userId);
+            boolean isPartner = demand.getManagerPartner() != null && demand.getManagerPartner().getUser().getId().equals(userId);
+            if (!isAdmin && !isCustomer && !isPartner) {
+                throw new ForbiddenException("Unauthorized access to this payment demand");
+            }
+        }
         return mapDemandToDto(demand);
     }
 
     @Transactional(readOnly = true)
     public PaymentDto.PaymentDemandDto getDemandById(Long demandId) {
-        RentalPaymentDemand demand = demandRepository.findById(demandId)
-                .orElseThrow(() -> new ResourceNotFoundException("Demand not found with id: " + demandId));
-        return mapDemandToDto(demand);
+        return getDemandById(null, demandId);
     }
 
     @Transactional
     public PaymentDto.PaymentSubmissionDto rejectSubmission(Long partnerUserId, Long submissionId, String rejectionReason) {
+        PartnerProfile partner = partnerService.validateVerifiedPartner(partnerUserId);
         RentalPaymentSubmission submission = submissionRepository.findById(submissionId)
                 .orElseThrow(() -> new ResourceNotFoundException("Submission not found"));
 
-        if (!submission.getManagerPartner().getUser().getId().equals(partnerUserId)) {
-            throw new BadRequestException("Only the managing partner can reject this submission");
+        if (!submission.getManagerPartner().getId().equals(partner.getId())) {
+            throw new ForbiddenException("Only the managing partner can reject this submission");
         }
 
         User partnerUser = userRepository.findById(partnerUserId).orElseThrow();

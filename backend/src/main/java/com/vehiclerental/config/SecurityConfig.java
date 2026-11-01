@@ -43,14 +43,16 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(
-                                "/api/v1/auth/**",
+                                "/api/v1/auth/login",
+                                "/api/v1/auth/register",
+                                "/api/v1/auth/refresh",
                                 "/api/v1/locations/**",
-                                "/api/v1/vehicles/**",
-                                "/api/v1/reviews/**",
-                                "/api/v1/files/**",
                                 "/api/v1/health",
                                 "/error"
                         ).permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/vehicles", "/api/v1/vehicles/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/reviews/vehicle/**", "/api/v1/operations/reviews/vehicle/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/files/download/vehicle_images/**").permitAll()
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated()
                 )
@@ -62,7 +64,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("*"));
+        config.setAllowedOriginPatterns(List.of("http://localhost:[*]", "http://127.0.0.1:[*]", "http://localhost:*"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("Authorization", "Content-Disposition", "X-Total-Count"));

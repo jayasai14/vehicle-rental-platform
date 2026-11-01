@@ -11,10 +11,10 @@ import com.vehiclerental.modules.payment.entity.RentalPaymentSubmission;
 import com.vehiclerental.modules.payment.repository.*;
 import com.vehiclerental.modules.user.entity.User;
 import com.vehiclerental.modules.user.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -41,9 +41,50 @@ class FinancialSafeguardsTest {
     private BookingService bookingService;
     @Mock
     private UserRepository userRepository;
+    @Mock
+    private com.vehiclerental.modules.partner.service.PartnerService partnerService;
+    @Mock
+    private com.vehiclerental.modules.vehicle.service.VehicleService vehicleService;
+    @Mock
+    private SecurityDepositRepository depositRepository;
+    @Mock
+    private DepositDeductionRepository deductionRepository;
+    @Mock
+    private SecurityDepositRefundRepository depositRefundRepository;
+    @Mock
+    private ContributorPayableRepository contributorPayableRepository;
+    @Mock
+    private BookingRepository bookingRepository;
+    @Mock
+    private com.vehiclerental.modules.partner.repository.PartnerProfileRepository partnerProfileRepository;
+    @Mock
+    private com.vehiclerental.modules.partner.repository.PartnerPaymentProfileRepository partnerPaymentProfileRepository;
+    @Mock
+    private com.vehiclerental.modules.operations.repository.SupportTicketRepository supportTicketRepository;
 
-    @InjectMocks
     private PaymentService paymentService;
+
+    @BeforeEach
+    void setUp() {
+        paymentService = new PaymentService(
+                demandRepository,
+                submissionRepository,
+                refundRepository,
+                depositRepository,
+                deductionRepository,
+                depositRefundRepository,
+                contributorPayableRepository,
+                holdRepository,
+                bookingRepository,
+                partnerProfileRepository,
+                partnerPaymentProfileRepository,
+                userRepository,
+                supportTicketRepository,
+                bookingService,
+                partnerService,
+                vehicleService
+        );
+    }
 
     @Test
     @DisplayName("Safeguard B: Calculate refundable balance correctly accounting for verified amount, cancellation fee, and pending refunds")

@@ -59,6 +59,17 @@ public class AuthDto {
         private String email;
         private String phoneNumber;
         private Set<String> roles;
+        private UserProfileDto user;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class UpdateProfileRequest {
+        private String fullName;
+        private String phoneNumber;
+        private String preferredLanguage;
     }
 
     @Getter

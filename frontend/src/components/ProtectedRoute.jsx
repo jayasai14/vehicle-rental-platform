@@ -18,11 +18,15 @@ export const ProtectedRoute = ({ children, allowedRoles = [] }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  if (allowedRoles.length > 0 && !allowedRoles.includes(user?.role)) {
+  const hasAllowedRole = allowedRoles.length === 0 ||
+    allowedRoles.includes(user?.role) ||
+    (Array.isArray(user?.roles) && allowedRoles.some(r => user.roles.includes(r)));
+
+  if (!hasAllowedRole) {
     // If logged in but unauthorized role, redirect to appropriate home or dashboard
-    if (user.role === 'PARTNER') return <Navigate to="/dashboard/partner" replace />;
-    if (user.role === 'CONTRIBUTOR') return <Navigate to="/dashboard/contributor" replace />;
-    if (user.role === 'ADMIN') return <Navigate to="/dashboard/admin" replace />;
+    if (user?.role === 'PARTNER' || user?.roles?.includes('PARTNER')) return <Navigate to="/dashboard/partner" replace />;
+    if (user?.role === 'CONTRIBUTOR' || user?.roles?.includes('CONTRIBUTOR')) return <Navigate to="/dashboard/contributor" replace />;
+    if (user?.role === 'ADMIN' || user?.roles?.includes('ADMIN')) return <Navigate to="/dashboard/admin" replace />;
     return <Navigate to="/dashboard/customer" replace />;
   }
 

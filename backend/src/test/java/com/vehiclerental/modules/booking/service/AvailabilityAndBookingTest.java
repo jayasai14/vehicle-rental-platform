@@ -9,10 +9,10 @@ import com.vehiclerental.modules.vehicle.repository.VehicleMaintenanceBlockRepos
 import com.vehiclerental.modules.vehicle.repository.VehiclePricingProfileRepository;
 import com.vehiclerental.modules.vehicle.repository.VehicleRepository;
 import com.vehiclerental.modules.vehicle.service.VehicleService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -39,9 +39,37 @@ class AvailabilityAndBookingTest {
     private BookingHoldRepository holdRepository;
     @Mock
     private BookingRepository bookingRepository;
+    @Mock
+    private com.vehiclerental.modules.partner.service.PartnerService partnerService;
+    @Mock
+    private com.vehiclerental.modules.vehicle.repository.VehicleImageRepository imageRepository;
+    @Mock
+    private com.vehiclerental.modules.vehicle.repository.VehicleFeatureRepository featureRepository;
+    @Mock
+    private com.vehiclerental.modules.partner.repository.PartnerProfileRepository partnerProfileRepository;
+    @Mock
+    private com.vehiclerental.modules.location.repository.PartnerHubRepository partnerHubRepository;
+    @Mock
+    private com.vehiclerental.modules.user.repository.UserRepository userRepository;
 
-    @InjectMocks
     private VehicleService vehicleService;
+
+    @BeforeEach
+    void setUp() {
+        vehicleService = new VehicleService(
+                vehicleRepository,
+                pricingRepository,
+                imageRepository,
+                featureRepository,
+                maintenanceRepository,
+                partnerProfileRepository,
+                partnerService,
+                partnerHubRepository,
+                userRepository,
+                bookingRepository,
+                holdRepository
+        );
+    }
 
     @Test
     @DisplayName("Should detect vehicle unavailable when conflicting confirmed booking exists")

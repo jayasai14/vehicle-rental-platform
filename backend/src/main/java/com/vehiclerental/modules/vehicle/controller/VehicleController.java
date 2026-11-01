@@ -79,7 +79,7 @@ public class VehicleController {
         return ResponseEntity.ok(ApiResponse.success(vehicleService.getPartnerFleet(user.getId()), "Fleet retrieved"));
     }
 
-    @PostMapping("/partners/vehicles")
+    @PostMapping({"/partners/vehicles", "/partners/fleet"})
     @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
     public ResponseEntity<ApiResponse<VehicleDto.VehicleDetailDto>> createVehicle(
             @Valid @RequestBody VehicleDto.VehicleCreateRequest request
@@ -88,6 +88,31 @@ public class VehicleController {
         User user = userRepository.findByEmail(email).orElseThrow();
         VehicleDto.VehicleDetailDto created = vehicleService.createVehicle(user.getId(), request);
         return ResponseEntity.ok(ApiResponse.success(created, "Vehicle added and published successfully"));
+    }
+
+    @PutMapping({"/partners/vehicles/{id}", "/partners/fleet/{id}"})
+    @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
+    public ResponseEntity<ApiResponse<VehicleDto.VehicleDetailDto>> updateVehicle(
+            @PathVariable Long id,
+            @Valid @RequestBody VehicleDto.VehicleCreateRequest request
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        VehicleDto.VehicleDetailDto updated = vehicleService.updateVehicle(user.getId(), id, request);
+        return ResponseEntity.ok(ApiResponse.success(updated, "Vehicle updated successfully"));
+    }
+
+    @PatchMapping({"/partners/fleet/{id}/status", "/partners/vehicles/{id}/status"})
+    @PreAuthorize("hasAnyRole('RENTAL_PARTNER', 'ADMIN')")
+    public ResponseEntity<ApiResponse<VehicleDto.VehicleDetailDto>> updateVehicleStatus(
+            @PathVariable Long id,
+            @RequestBody VehicleDto.UpdateStatusRequest request
+    ) {
+        String email = SecurityUtils.getCurrentUserEmail();
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String status = request.getStatus() != null ? request.getStatus() : request.getListingStatus();
+        VehicleDto.VehicleDetailDto updated = vehicleService.updateVehicleStatus(user.getId(), id, status);
+        return ResponseEntity.ok(ApiResponse.success(updated, "Vehicle status updated successfully"));
     }
 
     @PostMapping("/partners/vehicles/{id}/maintenance-blocks")
