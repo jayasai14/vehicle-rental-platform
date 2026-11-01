@@ -1,8 +1,8 @@
-# API Module Plan (Pre-Freeze Specification)
+# API Module Plan (Freeze Baseline)
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
-**Status:** Pre-Freeze Corrected Baseline  
+**Status:** Database Design Freeze Candidate Baseline (54-Table Architecture)  
 
 > [!NOTE]
 > This document defines the **target REST API contract specification** under the `/api/v1` namespace. No application controllers, routes, or endpoints have been implemented yet.
@@ -18,20 +18,21 @@
 - **Error Format:** Consistent error response schema: `timestamp`, `status`, `code`, `message`, `path`, `correlationId`, `fieldErrors`.
 - **Idempotency:** Unique `Idempotency-Key` header mandated on payment creation, hold conversion, refund dispatch, and settlement recording.
 - **Zero-Trust Pricing:** Never accept prices, commission rates, fixed fees, or deposit amounts from clients; all financial figures are derived authoritatively on the backend.
+- **Partner Verification Gate:** All endpoints under `/partner/**` enforce that the authenticated partner's profile is in `VERIFIED` status (`verification_status = 'VERIFIED'`). Pending applicants are rejected with `403 Forbidden`.
 
 ---
 
 ## 2. Authentication, User Profile & Addresses
 
 - `POST /api/v1/auth/register/customer` - Public customer registration (cannot assign `ADMIN` or `RENTAL_PARTNER`).
-- `POST /api/v1/auth/register/partner-application` - Rental partner onboarding application submission.
+- `POST /api/v1/auth/register/partner-application` - Rental partner onboarding application submission (creates profile in `SUBMITTED` status).
 - `POST /api/v1/auth/login` - Authenticate via email/phone and password; returns JWT access token and HTTP-only refresh token.
 - `POST /api/v1/auth/refresh` - Rotate refresh token and issue new access token.
 - `POST /api/v1/auth/logout` - Revoke active refresh token.
 - `POST /api/v1/auth/verify-email` - Complete email verification via OTP.
 - `POST /api/v1/auth/forgot-password` - Request password reset OTP/link.
 - `POST /api/v1/auth/reset-password` - Set new password with valid token.
-- `GET /api/v1/users/me` - Retrieve authenticated user profile and roles.
+- `GET /api/v1/users/me` - Retrieve authenticated user profile, roles, and partner verification status.
 - `PATCH /api/v1/users/me` - Update profile details.
 - `GET /api/v1/users/me/addresses` - List registered user addresses.
 - `POST /api/v1/users/me/addresses` - Register new address (customer home, pickup point).
@@ -39,12 +40,12 @@
 
 ---
 
-## 3. Partner Hubs, Locations & Delivery Zones
+## 3. Partner Hubs, Locations & Delivery Zones (Verified Partners Only)
 
-- `GET /api/v1/partners/me` - Retrieve partner business profile.
+- `GET /api/v1/partners/me` - Retrieve partner business profile and verification status.
 - `PATCH /api/v1/partners/me` - Update business details.
 - `POST /api/v1/partners/me/verification-documents` - Upload commercial permits, GSTIN, trade licence.
-- `GET /api/v1/partners/me/verification-status` - Check partner verification status.
+- `GET /api/v1/partners/me/verification-status` - Check partner verification status (`SUBMITTED`, `IN_REVIEW`, `VERIFIED`, `REJECTED`).
 - `GET /api/v1/partner/locations` - List partner depots/hubs (`partner_locations`).
 - `POST /api/v1/partner/locations` - Register new verified partner hub with operating hours.
 - `PATCH /api/v1/partner/locations/{locationId}` - Update hub operating details.
@@ -59,14 +60,14 @@
 - `GET /api/v1/vehicles` - Public search endpoint with category, dates, hub/delivery filters, and turnaround buffer validation.
 - `GET /api/v1/vehicles/{vehicleId}` - Public vehicle listing details (masked registration, verified badges).
 - `GET /api/v1/vehicles/{vehicleId}/availability` - Query available calendar intervals.
-- `POST /api/v1/partner/vehicles` - Register independently owned partner fleet vehicle (begins in `PARTNER_CUSTODY`).
+- `POST /api/v1/partner/vehicles` - Register fleet vehicle (supports individual owner or partner business legal owner; begins in `PARTNER_CUSTODY`).
 - `PATCH /api/v1/partner/vehicles/{vehicleId}` - Update vehicle specifications.
 - `POST /api/v1/partner/vehicles/{vehicleId}/documents` - Upload RC, insurance, PUC documents.
 - `POST /api/v1/partner/vehicles/{vehicleId}/pricing` - Set rental rates, turnaround buffer, and security deposit.
 - `POST /api/v1/partner/vehicles/{vehicleId}/publish` - Publish verified listing.
 - `POST /api/v1/partner/vehicles/{vehicleId}/pause` - Temporarily pause listing.
 - `GET /api/v1/partner/vehicles/{vehicleId}/minimum-price-quote` - Query backend contributor price floor derivation.
-- `POST /api/v1/vehicles/{vehicleId}/custody-events` - Record physical vehicle custody handover across all 8 permutations.
+- `POST /api/v1/vehicles/{vehicleId}/custody-events` - Record physical vehicle custody handover across all 8 permutations (typed custodians, actor, and location).
 - `GET /api/v1/vehicles/{vehicleId}/custody-events` - Auditable custody transfer history.
 - `GET /api/v1/partner/vehicles` - List partner-managed fleet (both partner-owned and accepted contributor-owned).
 - `GET /api/v1/contributor/vehicles` - List contributor's owned vehicles with status and current custodian.
@@ -78,7 +79,7 @@
 - `POST /api/v1/contributor/vehicle-applications` - Contributor submits vehicle for partner onboarding (begins in `CONTRIBUTOR_CUSTODY`).
 - `GET /api/v1/contributor/vehicle-applications` - List contributor's submitted applications.
 - `GET /api/v1/contributor/vehicle-applications/{applicationId}` - View application details.
-- `GET /api/v1/partner/contributions` - Partner lists incoming contributor applications.
+- `GET /api/v1/partner/contributions` - Verified partner lists incoming contributor applications.
 - `POST /api/v1/partner/contributions/{applicationId}/proposal` - Partner proposes bilateral agreement terms (fixed fee per booking, notice period, handover mode).
 - `POST /api/v1/contribution-agreements/{agreementId}/accept` - Contributor digitally signs and accepts agreement terms.
 - `POST /api/v1/contribution-agreements/{agreementId}/reject` - Contributor declines proposal.
@@ -125,7 +126,7 @@
 
 - `POST /api/v1/payments/orders` - Generate Razorpay payment order for rental charges + security deposit with idempotency key.
 - `POST /api/v1/payments/{paymentId}/verify` - Client submits gateway signature for verification.
-- `POST /api/v1/payments/webhooks/razorpay` - Idempotent webhook receiver (signature-verified; handles delayed payment recovery / auto-refund).
+- `POST /api/v1/payments/webhooks/razorpay` - Idempotent webhook receiver (HMAC SHA-256 verified; executes late webhook protocol: booking recovery if available, or automatic full refund if reserved).
 - `GET /api/v1/customer/payments` - Customer views payment transaction receipts.
 - `GET /api/v1/bookings/{bookingId}/deposit` - View deposit status, held balance, and deductions.
 - `POST /api/v1/partner/bookings/{bookingId}/deposit/deductions` - Partner proposes deduction with mandatory photos and quotes.
@@ -134,12 +135,16 @@
 - `POST /api/v1/admin/deposit-deductions/{deductionId}/resolve` - Admin arbitrates deposit dispute (**never auto-approved upon 48h expiration**).
 - `POST /api/v1/admin/bookings/{bookingId}/deposit/release` - Trigger release of residual deposit liability.
 - `POST /api/v1/admin/bookings/{bookingId}/refunds` - Trigger outward customer refund via gateway refund API.
+- `POST /api/v1/admin/refunds/{refundId}/retry` - Finance/Admin re-dispatches failed refund to gateway after error resolution.
+- `POST /api/v1/admin/refunds/{refundId}/settle-offline` - Finance logs manual direct bank transfer (NEFT/IMPS) with UTR for permanently declined refunds.
+- `GET /api/v1/admin/partner-receivables` - Query outstanding partner receivables resulting from post-payout reversals or clawbacks.
+- `POST /api/v1/admin/partner-receivables/{receivableId}/record-repayment` - Record direct partner bank repayment extinguishing receivable.
 - `GET /api/v1/payout-methods/me` - List user's registered disbursement accounts.
 - `POST /api/v1/payout-methods/me` - Register tokenized bank account / UPI ID (RazorpayX fund account).
 - `DELETE /api/v1/payout-methods/me/{methodId}` - Remove disbursement account.
 - `GET /api/v1/partner/financials` - Partner views gross rental proceeds, platform commission cut, and net earnings.
-- `GET /api/v1/partner/contributor-payables` - Partner lists contractual fixed fee payables owed to contributors.
-- `POST /api/v1/partner/contributor-payables/{payableId}/record-settlement` - **Approach A Baseline:** Partner records direct bank transfer with mandatory UTR reference, receipt, and date.
+- `GET /api/v1/partner/contributor-payables` - Partner lists contractual fixed fee obligations owed to contributors (`contributor_payables`).
+- `POST /api/v1/partner/contributor-payables/{payableId}/record-settlement` - **Approach A Baseline:** Partner records single complete direct bank transfer with mandatory UTR reference, payment date, and receipt attachment. (Does NOT affect platform general ledger cash).
 - `POST /api/v1/contributor/contributor-payables/{payableId}/acknowledge` - Contributor confirms receipt of direct partner settlement.
 - `POST /api/v1/contributor/contributor-payables/{payableId}/dispute` - Contributor disputes settlement amount or invalid UTR reference.
 - `GET /api/v1/contributor/earnings` - Contributor dashboard tracking fixed compensation per eligible completed booking.
@@ -148,7 +153,21 @@
 
 ---
 
-## 9. Reviews, Support Tickets & Notifications
+## 9. General Ledger & Administrative Audit Endpoints
+
+- `GET /api/v1/admin/ledger/accounts` - List Master Chart of Accounts (`ledger_accounts`).
+- `GET /api/v1/admin/ledger/transactions` - Query journal transaction headers (`ledger_transactions`) with date range and reference filters.
+- `GET /api/v1/admin/ledger/transactions/{transactionGroupId}/entries` - View balanced journal line items (`ledger_entries`).
+- `GET /api/v1/admin/audit-logs` - Query security, authentication, and financial audit logs with correlation IDs.
+- `POST /api/v1/admin/partners/{partnerId}/verify` - Approve partner onboarding application (unlocks partner operational capabilities).
+- `POST /api/v1/admin/partners/{partnerId}/reject` - Reject partner application with reason.
+- `POST /api/v1/admin/vehicles/{vehicleId}/verify` - Approve or reject vehicle listing compliance.
+- `GET /api/v1/admin/disputes` - Queue of open deposit and settlement disputes requiring arbitration.
+- `POST /api/v1/admin/commission-rules` - Configure platform commission percentages, fixed fees, and minimum thresholds.
+
+---
+
+## 10. Reviews, Support Tickets & Notifications
 
 - `POST /api/v1/bookings/{bookingId}/reviews` - Customer submits rating and review for completed rental.
 - `GET /api/v1/vehicles/{vehicleId}/reviews` - Public vehicle reviews.
@@ -157,14 +176,3 @@
 - `POST /api/v1/support/tickets/{ticketId}/messages` - Add message or evidence attachment to support ticket.
 - `GET /api/v1/notifications` - List in-app notifications.
 - `PATCH /api/v1/notifications/{notificationId}/read` - Mark notification as read.
-
----
-
-## 10. Administrative Management & Audit
-
-- `GET /api/v1/admin/audit-logs` - Query security, authentication, and financial audit logs with correlation IDs.
-- `GET /api/v1/admin/ledger/entries` - View append-only double-entry ledger entries grouped by `transaction_group_id`.
-- `POST /api/v1/admin/partners/{partnerId}/verify` - Approve or reject partner application.
-- `POST /api/v1/admin/vehicles/{vehicleId}/verify` - Approve or reject vehicle listing compliance.
-- `GET /api/v1/admin/disputes` - Queue of open deposit and settlement disputes requiring arbitration.
-- `POST /api/v1/admin/commission-rules` - Configure platform commission percentages, fixed fees, and minimum thresholds.

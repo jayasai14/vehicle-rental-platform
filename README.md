@@ -23,33 +23,33 @@ Customers use a unified marketplace to discover and book both inventory types.
 
 - `CUSTOMER`: Browse, compare, create 15-minute booking holds, confirm bookings via payment, manage own bookings, request extensions/cancellations, participate in inspections, dispute deposit deductions (48h window), view own payments and verification records.
 - `VEHICLE_CONTRIBUTOR`: Submit personally owned vehicles, review partner offers, manage agreements/availability requests, participate in direct handover/return inspections, acknowledge direct handovers, view earnings and settlement statuses (with UTR references), acknowledge or dispute direct settlements, request vehicle withdrawal.
-- `RENTAL_PARTNER`: Maintain partner business profile, manage hubs and delivery zones, register independently owned fleet, review contributor vehicle submissions, manage accepted vehicles and bookings, conduct inspections, manage handovers/returns, and record direct contributor settlements with UTR (Approach A).
-- `ADMIN`: Verify partners and vehicles, manage commission rules, arbitrate deposit disputes and damage claims, audit double-entry ledger, oversee compliance, and view security audit logs. Admin access is permission-controlled and audited.
+- `RENTAL_PARTNER (VERIFIED)`: Maintain partner business profile, manage hubs and delivery zones, register independently owned fleet, review contributor vehicle submissions, manage accepted vehicles and bookings, conduct inspections, manage handovers/returns, and record direct contributor settlements with UTR (Approach A).
+- `ADMIN`: Verify partners and vehicles, manage commission rules, arbitrate deposit disputes and damage claims, audit double-entry general ledger, oversee compliance, and view security audit logs. Admin access is permission-controlled and audited.
 
 ---
 
-## Authoritative Pre-Freeze Architecture Documentation
+## Authoritative Database Design Freeze Documentation (54 Physical Tables)
 
-All documentation has been updated to reflect the pre-freeze architecture baseline:
+All documentation has been updated to reflect the final database design freeze candidate baseline:
 
 1. [Project Constitution](docs/PROJECT_CONSTITUTION.md) — Mandatory development rules, non-negotiable domain invariants, and configurable operational defaults.
 2. [Business Requirements](docs/BUSINESS_REQUIREMENTS.md) — Workflows, dual inventory channels, 8 custody permutations, damage claim review rules, and tax disclaimers.
 3. [System Architecture](docs/ARCHITECTURE.md) — Modular monolith design, module ownership, outbox pattern, and distributed scheduling.
-4. [Architecture Decision Records](docs/ARCHITECTURE_DECISIONS.md) — Formal ADRs (ADR-001 through ADR-013).
-5. [Final Physical Entity Inventory](docs/FINAL_ENTITY_INVENTORY.md) — Authoritative inventory of **52 proposed physical tables** (50 application-domain + 2 infrastructure).
-6. [Entity Relationships & Master ERD](docs/ENTITY_RELATIONSHIPS.md) — Referential integrity, cardinality, and comprehensive Mermaid ER diagram connecting all 50 domain tables.
+4. [Architecture Decision Records](docs/ARCHITECTURE_DECISIONS.md) — Formal ADRs (ADR-001 through ADR-017).
+5. [Final Physical Entity Inventory](docs/FINAL_ENTITY_INVENTORY.md) — Authoritative inventory of **54 proposed physical tables** (52 application-domain + 2 infrastructure).
+6. [Entity Relationships & Master ERD](docs/ENTITY_RELATIONSHIPS.md) — Referential integrity, cardinality, and comprehensive Mermaid ER diagram connecting all 52 domain tables.
 7. [Operational & Financial State Machines](docs/STATE_MACHINES.md) — Decoupled lifecycle state transition specifications for holds, bookings, payments, refunds, deposits, agreements, and custody.
-8. [Financial Architecture & Ledger](docs/FINANCIAL_ARCHITECTURE.md) — Double-entry accounting journal scenarios, Approach A (MVP) vs Approach B (Future), and contributor price-floor engine.
-9. [Role-Permission Matrix](docs/ROLE_PERMISSION_MATRIX.md) — Global capabilities and fine-grained resource-level authorization rules (BOLA/IDOR defense).
+8. [Financial Architecture & General Ledger](docs/FINANCIAL_ARCHITECTURE.md) — Normalized 3-table double-entry accounting, separated partner obligation model (`contributor_payables`), Approach A (MVP), and contributor price-floor engine.
+9. [Role-Permission Matrix](docs/ROLE_PERMISSION_MATRIX.md) — Global capabilities, verified partner gates, and fine-grained resource-level authorization rules (BOLA/IDOR defense).
 10. [API Module Plan](docs/API_MODULES.md) — REST endpoint inventory under `/api/v1` namespace.
 11. [Security Baseline](docs/SECURITY.md) — Authentication, token encryption, application defenses, and dispute arbitration security.
 12. [Page and Route Inventory](docs/PAGES_AND_ROUTES.md) — Frontend route map across roles.
 13. [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md) — Phase discipline, Git workflow, and quality gates.
-14. [Architecture Review Report](docs/architecture_review_report.md) — Pre-freeze validation audit findings and resolution status.
+14. [Architecture Review Report](docs/architecture_review_report.md) — Pre-freeze validation audit findings, resolution status, and remaining Product Owner decisions.
 
 ---
 
 ## Implementation Status
 
 > [!IMPORTANT]
-> This repository is currently in the **Pre-Freeze Architecture Validation** stage. **No application code, Flyway migrations, JPA entities, or SQL DDL scripts have been generated yet.** Implementation will commence only after formal Product Owner database design freeze sign-off.
+> This repository is currently in the **Database Design Freeze & Pre-Implementation** stage. **No application code, Flyway migrations, JPA entities, or SQL DDL scripts have been generated yet.** Implementation will commence only after formal Product Owner database design freeze sign-off.

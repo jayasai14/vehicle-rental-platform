@@ -1,8 +1,8 @@
-# Project Constitution (Pre-Freeze Specification)
+# Project Constitution (Freeze Baseline)
 
 **Project:** Vehicle Rental Platform  
 **Market:** Vijayawada, Andhra Pradesh (Expandable)  
-**Status:** Pre-Freeze Corrected Baseline  
+**Status:** Database Design Freeze Candidate Baseline (54-Table Architecture)  
 
 This document is the governing contract for all human contributors, engineering leads, and AI coding agents. Read it before making changes.
 
@@ -14,7 +14,7 @@ This document is the governing contract for all human contributors, engineering 
 - **Dual Inventory Channels:** Preserve both inventory channels: partner-owned fleet and contributor-owned vehicles.
 - **Unified Customer Experience:** Customer search, checkout, booking, and return workflows must remain seamless and identical across both inventory sources.
 - **Separation of Concerns:** Model legal ownership, operational manager assignment, physical custody, and financial settlement as independent, decoupled concepts.
-- **Marketplace Neutrality:** The platform is a technology facilitator. The rental partner is the sole contractual debtor for contributor fixed earnings.
+- **Marketplace Neutrality:** The platform is a technology facilitator. The rental partner is the sole contractual debtor for contributor fixed earnings. Direct payments by partners to contributors are never represented as platform cash disbursements.
 - **Configurability:** Launch in Vijayawada, AP, with configurable city, turnaround, pricing, and tax parameters to support rapid regional expansion.
 
 ---
@@ -42,12 +42,17 @@ This document is the governing contract for all human contributors, engineering 
 
 ### 3.1 Inventory, Ownership & Custody Invariants
 - A user may hold multiple additive roles (`CUSTOMER`, `VEHICLE_CONTRIBUTOR`, `RENTAL_PARTNER`). `ADMIN` assignment is strictly controlled by trusted internal administrative processes.
-- A partner can independently register and operate its own fleet without contributor submissions.
-- A contributor vehicle requires verified owner documentation and an accepted `contribution_agreements` contract before publication.
+- **Partner Verification Gate:** Pending partner applicants (`partner_profiles.verification_status IN ('SUBMITTED', 'IN_REVIEW')`) must **never receive full partner privileges**. Only formally verified partners may manage rental inventory or accept contributed vehicles.
+- **Legal Ownership Combinations:** The vehicle catalog explicitly supports:
+  1. Individual person legal owner (`legal_owner_user_id` FK $\rightarrow$ `users.id`).
+  2. Partner business legal owner (`legal_owner_partner_id` FK $\rightarrow$ `partner_profiles.id`).
+  3. Separate operational rental manager (`manager_partner_id` FK $\rightarrow$ `partner_profiles.id`).
+  - Database check constraints enforce that an individual-owned vehicle has `legal_owner_user_id` and a partner-business vehicle has `legal_owner_partner_id`.
 - A vehicle can have only **one active operational manager partner** at a time.
 - Physical vehicle custody is modeled **independently of vehicle legal ownership and booking status**:
   - Partner-owned vehicles begin in `PARTNER_CUSTODY`.
   - Contributor-owned vehicles begin in `CONTRIBUTOR_CUSTODY`.
+  - Custody events record previous custodian, receiving custodian, handover actor, authorized representative, and location via **explicit typed foreign keys**, barring unvalidated polymorphic references.
   - The system must explicitly support all 8 canonical custody permutations: contributor-to-partner, partner-to-customer, contributor-to-customer (owner-managed), customer-to-partner, customer-to-contributor (owner-managed return), partner-to-contributor, inter-hub transfer, and logistics agent relocation.
 
 ### 3.2 Booking Hold & Concurrency Invariants
@@ -57,10 +62,27 @@ This document is the governing contract for all human contributors, engineering 
   ```
 - Turnaround buffers (`turnaround_buffer_minutes`) must be enforced before and after every booking and maintenance blackout block.
 - **Hold Independence:** A booking hold (`booking_holds`) is a temporary 15-minute slot reservation. **Creating a booking hold must NOT create an incomplete or draft record in the `bookings` table.**
-- **Delayed Webhook Recovery:** If a successful payment webhook arrives after a hold has expired and the requested interval has been reserved by another customer, the platform must **automatically trigger a 100% gateway refund**.
+- **Late Payment Webhook Protocol:** If a payment webhook confirms capture after hold expiration:
+  - Fresh availability check is executed under `SELECT ... FOR UPDATE`.
+  - Recovers booking as `CONFIRMED` if the requested interval plus turnaround buffer remains completely available.
+  - **Automatically triggers a 100% gateway refund** if the interval has been reserved by another customer in the interim.
+  - All operations are completely idempotent against duplicate webhook delivery (`payment_webhook_events`).
 
 ### 3.3 Financial & Contributor Settlement Invariants
-- **Contributor Settlement (Approach A Baseline):** The rental partner is the sole contractual debtor for contributor fixed earnings. Under Approach A, the partner settles the contributor directly via bank transfer (NEFT/IMPS/UPI) outside the platform; the platform calculates payables, records obligations, allows partner UTR recording, tracks status, enables contributor confirmation or dispute, and provides admin audit.
+- **Separation of Financial Models:**
+  1. **Platform General Ledger (`ledger_accounts`, `ledger_transactions`, `ledger_entries`):** Tracks actual platform cash, customer refundable liabilities, platform commission revenue, net partner payables, and partner receivables. Every journal transaction group balances to zero ($\sum \text{Debits} = \sum \text{Credits}$).
+  2. **Partner-Contributor Obligation Model (`contributor_payables`):** Tracks the rental partner's contractual debt to the contributor. Stored separately from the platform general ledger.
+  3. **Direct Settlement Evidence (Approach A Baseline):** Direct payments by partners to contributors are **never represented as platform cash disbursements**. The partner logs the bank UTR number, payment date, and receipt attachment.
+- **Customer Payment Collection & Settlement Demarcation:**
+  - The Platform Operating Entity is the digital marketplace **Merchant of Record (MoR)**, holder of the customer security deposit as a **Refundable Liability**, sole entity responsible for issuing customer refunds via gateway APIs, and contractual debtor for partner net rental proceeds (`PARTNER_PAYABLE`).
+  - Payment gateway integration is **method-independent** and abstracted behind service interfaces.
+  - Direct partner-to-contributor settlement under Approach A governs **only** the private bilateral partner-contributor agreement and does NOT establish compliance for the customer payment collection and partner rental payout flow.
+- **Single Lump-Sum Contributor Settlement Invariant:**
+  - Each completed booking generates exactly one indivisible contributor payable. Partial payments or installment disbursements are prohibited at domain and database levels.
+  - Direct settlement evidence (Bank UTR, date, proof document) becomes strictly immutable once transitioned to `SETTLED_BY_PARTNER`.
+- **Post-Payout Reversal & Partner Receivable (`PARTNER_RECEIVABLE`):**
+  - When an incorrect credit or damage deduction is reversed after partner payout disbursement, the platform debits `PARTNER_RECEIVABLE` (Asset) and credits `REFUND_PAYABLE`, allowing immediate customer refund without negative liability balances.
+  - Outstanding partner receivables are recovered via automatic offset against subsequent payout batches or direct partner repayment.
 - The platform must **never silently assume debtor liability** for partner obligations.
 - **Approach B (Razorpay Route):** Remains a future enhancement marked **PENDING** partner onboarding, KYC workflows, and RBI payment aggregator regulatory review.
 - **Contributor Price Floor:** Partner-configured listing rates for contributor vehicles must enforce the mathematical profitability floor:
@@ -82,8 +104,7 @@ This document is the governing contract for all human contributors, engineering 
 
 ### 3.6 Architecture & Accounting Invariants
 - Cross-module side effects must use Spring Application Events (`@TransactionalEventListener(AFTER_COMMIT)`) and the Transactional Outbox Pattern (`outbox_events`).
-- Financial movements must be recorded in an append-only double-entry ledger (`ledger_entries`) where every transaction group balances to zero ($\sum \text{Debits} = \sum \text{Credits}$). Corrections must use reversal entries.
-- The confirmed pre-freeze baseline consists of **52 proposed physical tables** (50 application-domain + 2 infrastructure). No migrations or actual database schemas have been generated yet.
+- The confirmed pre-freeze baseline consists of **54 proposed physical tables** (52 application-domain + 2 infrastructure). No migrations or actual database schemas have been generated yet.
 
 ---
 
